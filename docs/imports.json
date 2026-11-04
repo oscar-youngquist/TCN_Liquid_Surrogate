@@ -1,0 +1,79 @@
+{
+  "repository": "https://github.com/oscar-youngquist/HCR_Genesis_PACT_Development",
+  "commit": "300d3288b9bce83ccdc31b38bd7926f9484787e7",
+  "files": [
+    {
+      "source": "liquid_collection/discrete/data.py",
+      "destination": "src/liquid_tcn/ported/discrete/data.py",
+      "sha256": "c2e25ac7061809beaff8478bedac74367e2a75531084bc0e35c0172d1b78dc56"
+    },
+    {
+      "source": "liquid_collection/discrete/losses.py",
+      "destination": "src/liquid_tcn/ported/discrete/losses.py",
+      "sha256": "28cbd48e3f0dec51d1292ab99bc8ae5c228b5035e2c510e0ecb2293e87e21a23"
+    },
+    {
+      "source": "liquid_collection/discrete/analyze.py",
+      "destination": "src/liquid_tcn/ported/discrete/analyze.py",
+      "sha256": "3297169a3078f2ed4252011600d455a473e999d2e1b28b47803fd74859d52670"
+    },
+    {
+      "source": "liquid_collection/discrete/__init__.py",
+      "destination": "src/liquid_tcn/ported/discrete/__init__.py",
+      "sha256": "23471825168bd3ebf2bd053afce4a5d76c45020fd017773acf4d401885b78a1a"
+    },
+    {
+      "source": "liquid_collection/audit.py",
+      "destination": "src/liquid_tcn/ported/audit.py",
+      "sha256": "1206256b09468f0122f55374aeafe31c37026a0ee7d1390b79bd3f7165c61217"
+    },
+    {
+      "source": "liquid_collection/storage.py",
+      "destination": "src/liquid_tcn/ported/storage.py",
+      "sha256": "4368a125acfb7ba8cdedbe595d02118a9515d890cfbef738cc96cdc9e3889713"
+    },
+    {
+      "source": "liquid_collection/physics.py",
+      "destination": "src/liquid_tcn/ported/physics.py",
+      "sha256": "8251bef84ddcad45a4aca557376dd3b8e77936e3c08dfe1fa66247f741c6b131"
+    },
+    {
+      "source": "liquid_collection/cadence.py",
+      "destination": "src/liquid_tcn/ported/cadence.py",
+      "sha256": "dbc58e44f65fd33cdf583bf943020537ad55edf6b71c99926820ede10dc0a73a"
+    },
+    {
+      "source": "tests/test_liquid_discrete.py",
+      "destination": "tests/test_ported_discrete.py",
+      "sha256": "672d9af6d0f3ceef16ca21fc271b9a83b187cb4e9eb707f3681d1b8759f7c248"
+    },
+    {
+      "source": "docs/liquid_surrogate_collection.md",
+      "destination": "docs/liquid_surrogate_collection.md",
+      "sha256": "fddc3301aa18099dabf0b2ac1d383edec3ba4f9d5981a97125e18e4def864c94"
+    },
+    {
+      "source": "docs/liquid_discrete_constraints.md",
+      "destination": "docs/liquid_discrete_constraints.md",
+      "sha256": "cf4470a1bf2d17a107c54260a4103e04feebd968862d7297ba20f1624b877e33"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "docs/SOURCE_LICENSE",
+      "sha256": "b630e1f180f02908fe927c80a28dd2bba84fa7e71725c263aa103432ca9dd666"
+    }
+  ],
+  "adaptation": "Only package import paths changed in ported modules.",
+  "training_specification": {
+    "name": "hardpact_liquid_wrench_training_specification.pdf",
+    "sha256": "370a3aac7a68bb5f02f0f6167167151525ede6a2905143e80dc0aa07c65167c7",
+    "architecture": "Section 6, v2.0, November 3 2026",
+    "override": "User instruction selects validated discrete objectives over instantaneous/JVP and trapezoidal wrench losses; no HardPACT integration."
+  },
+  "production_adaptations": [
+    "liquid_tcn.data retains recorded z and held values, with same-tick held-event updates",
+    "Bounded heap merge replaces diagnostic whole-attempt buffering; reviewed extraction/grid functions run on one closed grid bin",
+    "Compact split assembly follows analyze.prepare_intervals; native debug mode sums recorded world impulses because its labels use coupling-phase poses",
+    "Streaming continuous-history eligibility is checked against reference eligible_windows; rows are stored once in mmap shards"
+  ]
+}

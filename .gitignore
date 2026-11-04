@@ -218,3 +218,46 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Liquid surrogate: source recordings, prepared mmap datasets, and local runs
+/data/
+/datasets/
+/recordings/
+/prepared/
+/artifacts/
+/runs/
+/logs/
+/tb_logs/
+/outputs/
+/checkpoints/
+/exports/
+/source_snapshots/
+*.npz
+*.npy
+*.mmap
+*.idx
+*.h5
+*.hdf5
+*.zarr/
+
+# Learned weights / optimizer state / deployment binaries
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.engine
+
+# Experiment trackers and profiler output
+wandb/
+mlruns/
+lightning_logs/
+tensorboard/
+events.out.tfevents.*
+*.prof
+*.trace.json
+
+# Partial atomic writes and machine-local configuration
+*.tmp
+configs/*.local.json
+.DS_Store

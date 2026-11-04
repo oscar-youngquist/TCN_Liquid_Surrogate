@@ -1,0 +1,554 @@
+{
+  "test_suite": {
+    "passed": 34,
+    "seconds": 9.92,
+    "command": "python -m pytest -q",
+    "multiworker_note": "Requires local IPC sockets; executed outside the filesystem/network sandbox."
+  },
+  "source_commit": "300d3288b9bce83ccdc31b38bd7926f9484787e7",
+  "source_equivalence": {
+    "physics": "bitwise equal including all-head gradients",
+    "recorded_rows": 12603,
+    "episodes": [
+      {
+        "environment": 0,
+        "episode": 0,
+        "histories": 949,
+        "long": 909,
+        "short": 948
+      },
+      {
+        "environment": 0,
+        "episode": 1,
+        "histories": 0,
+        "long": 0,
+        "short": 0
+      },
+      {
+        "environment": 1,
+        "episode": 0,
+        "histories": 949,
+        "long": 909,
+        "short": 948
+      },
+      {
+        "environment": 1,
+        "episode": 1,
+        "histories": 0,
+        "long": 0,
+        "short": 0
+      }
+    ]
+  },
+  "prepared": {
+    "manifest_sha256": "11b0277f0671681d092ee796e8e6a9dacada9eccba3c37f98aba15aba838ab2c",
+    "windows": {
+      "test": 1818,
+      "train": 1818,
+      "validation": 1818
+    },
+    "counts": {
+      "assumption_rejected_windows": 0,
+      "eligible_windows": 5454,
+      "grid_endpoints": 7206,
+      "grid_endpoints_without_complete_window": 1752,
+      "invalid_full_interval": 24,
+      "invalid_grid_endpoints": 24,
+      "merged_split_intervals": 7200,
+      "series_created": 6,
+      "unmerged_partial_duration_s": 0,
+      "unmerged_partial_pieces": 0,
+      "unselected_grid_endpoints": 6
+    },
+    "profile": {
+      "peak_rss_kib": 453912,
+      "seconds": 6.592324256998836
+    },
+    "sources": [
+      {
+        "group": "planes10_4-representative",
+        "robot": "go1",
+        "split": "train",
+        "payload_id": "f964177b4b37a95160265d9b42555203ba7c72ecb1be7d263d92f1e1e1f7a07d",
+        "path": "/home/oyoungquist/Research/Genesis_Development/HCR_Genesis_PACT_Development/runs/liquid_validation_planes10_4_20261103/go1-dact-representative/round-00000/collection/attempt-0000"
+      },
+      {
+        "group": "planes10_4-viscous",
+        "robot": "go1",
+        "split": "validation",
+        "payload_id": "154ada8735efa743bb4cabd50132f231a4dcae747ea19ed78fb73f4e9bfc4e3f",
+        "path": "/home/oyoungquist/Research/Genesis_Development/HCR_Genesis_PACT_Development/runs/liquid_validation_planes10_4_20261103/go1-dact-viscous/round-00000/collection/attempt-0000"
+      },
+      {
+        "group": "planes10_4-high_fill",
+        "robot": "go1",
+        "split": "test",
+        "payload_id": "5315ac9c293bb2c0ead0e9b1da667f1c1704cc2e1232d5a56e1a57f2b4706660",
+        "path": "/home/oyoungquist/Research/Genesis_Development/HCR_Genesis_PACT_Development/runs/liquid_validation_planes10_4_20261103/go1-dact-high_fill/round-00000/collection/attempt-0000"
+      }
+    ]
+  },
+  "training_profile": {
+    "clipped": 0,
+    "clipped_fraction": 0.0,
+    "final_update": 6,
+    "loader_seconds": 0.005544345001908368,
+    "peak_device_bytes": 0,
+    "peak_rss_kib": 613380,
+    "samples": 24,
+    "samples_per_training_second": 356.74341071323465,
+    "stopped_early": false,
+    "training_seconds": 0.06727524399684626,
+    "updates": 6,
+    "validation_seconds": 0.04541772099946684,
+    "wall_seconds": 0.18029227499937406
+  },
+  "training_precision": {
+    "float32": {
+      "relative_gradient_error": 5.1883717843671e-07,
+      "relative_loss_error": 1.6078696404834432e-09,
+      "tolerance": 0.005
+    }
+  },
+  "optional_bf16": {
+    "checks": {
+      "amp": {
+        "relative_gradient_error": 0.00502657356807415,
+        "relative_loss_error": 7.619735654187609e-05,
+        "tolerance": 0.05
+      },
+      "float32": {
+        "relative_gradient_error": 5.1883717843671e-07,
+        "relative_loss_error": 1.6078696404834432e-09,
+        "tolerance": 0.005
+      }
+    },
+    "device": "cpu",
+    "status": "passed"
+  },
+  "loader_zero_workers": {
+    "cache_maps_per_process": 8,
+    "first_batch_seconds": 0.002182689999244758,
+    "main_peak_rss_kib": 450700,
+    "note": "Includes worker startup; OS page cache shared; main RSS excludes spawned workers",
+    "prefetch_batches_per_worker": 2,
+    "seconds": 0.1092732459983381,
+    "shard_rows": 512,
+    "windows": 1600,
+    "windows_per_second": 14642.193387614147,
+    "workers": 0
+  },
+  "loader_two_workers": {
+    "cache_maps_per_process": 8,
+    "first_batch_seconds": 0.6985784489988873,
+    "main_peak_rss_kib": 447044,
+    "note": "Includes worker startup; OS page cache shared; main RSS excludes spawned workers",
+    "prefetch_batches_per_worker": 2,
+    "seconds": 0.9719937770005345,
+    "shard_rows": 512,
+    "windows": 1600,
+    "windows_per_second": 1646.101073751134,
+    "workers": 2
+  },
+  "export": {
+    "contextual_predictions": 41,
+    "maximum_absolute_difference": 7.62939453125e-06,
+    "output_values": 12,
+    "status": "passed"
+  },
+  "evaluation": {
+    "checkpoint_sha256": "93303448b34f411d2c95ba5cf892c3c56cec19fa3207c0db335d5bd24727ce38",
+    "conservation": {
+      "long": {
+        "count": 1818,
+        "maximum_vector": [
+          0.00717751152875313,
+          8.277712188531224,
+          1.2202841551781183
+        ],
+        "normalized_rms_vector": [
+          0.008919094537329014,
+          0.23305827036829374,
+          0.04414177403042853
+        ],
+        "rms_vector": [
+          0.003880574500534369,
+          4.606089632458075,
+          0.42086145197435654
+        ]
+      },
+      "short": {
+        "count": 72720,
+        "maximum_vector": [
+          0.001919639213543384,
+          1.2444165635287323,
+          0.21265348837503112
+        ],
+        "normalized_rms_vector": [
+          0.0286653535556905,
+          0.4192215993115488,
+          0.11213374278646644
+        ],
+        "rms_vector": [
+          0.0003117974576663894,
+          0.20713406302296256,
+          0.026727952495903252
+        ]
+      }
+    },
+    "coverage": {
+      "eligible_windows": 1818,
+      "evaluated_windows": 1818,
+      "fraction": 1.0,
+      "preparation_counts": {
+        "assumption_rejected_windows": 0,
+        "eligible_windows": 5454,
+        "grid_endpoints": 7206,
+        "grid_endpoints_without_complete_window": 1752,
+        "invalid_full_interval": 24,
+        "invalid_grid_endpoints": 24,
+        "merged_split_intervals": 7200,
+        "series_created": 6,
+        "unmerged_partial_duration_s": 0,
+        "unmerged_partial_pieces": 0,
+        "unselected_grid_endpoints": 6
+      }
+    },
+    "data_manifest_sha256": "11b0277f0671681d092ee796e8e6a9dacada9eccba3c37f98aba15aba838ab2c",
+    "ground_truth_conservation": {
+      "long": {
+        "count": 1818,
+        "maximum_vector": [
+          0.0001450105555372113,
+          0.005435650270764373,
+          0.0025320159207927275
+        ],
+        "normalized_rms_vector": [
+          0.00010233880853057879,
+          7.968426917677637e-05,
+          0.0001389897385674665
+        ],
+        "rms_vector": [
+          4.452619816246077e-05,
+          0.0015748545474867208,
+          0.0013251715505729197
+        ]
+      },
+      "short": {
+        "count": 72720,
+        "maximum_vector": [
+          8.439502433748378e-05,
+          0.0002505020767222918,
+          7.975640592702803e-05
+        ],
+        "normalized_rms_vector": [
+          0.0011045880766370419,
+          9.647994753152653e-05,
+          0.0001455555841491995
+        ],
+        "rms_vector": [
+          1.2014774330096001e-05,
+          4.7669974875361806e-05,
+          3.4694309261565857e-05
+        ]
+      }
+    },
+    "heads": {
+      "S_B": {
+        "bias_axis": [
+          -0.002979229118366055,
+          0.002648797841605417,
+          -0.002687566613956284
+        ],
+        "count": 74538,
+        "mae_axis": [
+          0.016003376653450994,
+          0.020279178093845024,
+          0.01312346268103926
+        ],
+        "maximum_vector_error": 0.08817685084190008,
+        "rmse_axis": [
+          0.02009250652715403,
+          0.025129155838619036,
+          0.016011904106837775
+        ]
+      },
+      "force": {
+        "bias_axis": [
+          1.8385594439226163,
+          1.585730603243108,
+          19.213622933699455
+        ],
+        "count": 74538,
+        "mae_axis": [
+          12.816225921164852,
+          20.43345287286911,
+          22.145102493603076
+        ],
+        "maximum_vector_error": 202.18934181457834,
+        "rmse_axis": [
+          16.754426403138257,
+          26.332118532945525,
+          29.30831335647909
+        ]
+      },
+      "moment": {
+        "bias_axis": [
+          0.8102626277249592,
+          -0.3526487917354607,
+          -0.03497390063349326
+        ],
+        "count": 74538,
+        "mae_axis": [
+          4.32091591769152,
+          2.735193518844181,
+          0.6474635833311129
+        ],
+        "maximum_vector_error": 30.00525884525598,
+        "rmse_axis": [
+          5.4509903374753295,
+          3.6466334269495744,
+          0.8200829873026622
+        ]
+      },
+      "r_B": {
+        "bias_axis": [
+          -0.00029615269056724986,
+          2.4900901440323125e-05,
+          -0.01627382937609181
+        ],
+        "count": 74538,
+        "mae_axis": [
+          0.004578097088284708,
+          0.003994233147709486,
+          0.01627382937609181
+        ],
+        "maximum_vector_error": 0.025654497830631253,
+        "rmse_axis": [
+          0.0057276182454412015,
+          0.005148507873160268,
+          0.01632504141771131
+        ]
+      },
+      "v_B": {
+        "bias_axis": [
+          0.0032973339276465754,
+          0.0077211979678065154,
+          -0.015595914676717218
+        ],
+        "count": 74538,
+        "mae_axis": [
+          0.04615443026758057,
+          0.04153093907034404,
+          0.01714449694243028
+        ],
+        "maximum_vector_error": 0.17248191961934548,
+        "rmse_axis": [
+          0.05697024197814106,
+          0.05307407846468408,
+          0.0205497807529484
+        ]
+      }
+    },
+    "lag_definition": "demeaned vector cross-correlation within each window, +/- 50 ms; positive means prediction delayed",
+    "metric_name": "normalized_supervised_mse_all_heads",
+    "normalized_mse_per_head": [
+      2.0226567105190894,
+      2.0079918338632643,
+      1.3818636112253566,
+      0.5614821508663943,
+      1.8485209368223885
+    ],
+    "peak_wrench": {
+      "force": {
+        "lag_valid_windows": 1818,
+        "maximum_error_at_target_peak": 202.18934181457834,
+        "mean_error_at_target_peak": 99.45011170699648,
+        "mean_lag_seconds": 0.006757425742574232,
+        "windows": 1818
+      },
+      "moment": {
+        "lag_valid_windows": 1818,
+        "maximum_error_at_target_peak": 30.00525884525598,
+        "mean_error_at_target_peak": 15.919780691727292,
+        "mean_lag_seconds": 0.0011798679867986747,
+        "windows": 1818
+      }
+    },
+    "per_robot_payload": {
+      "go1/5315ac9c293bb2c0ead0e9b1da667f1c1704cc2e1232d5a56e1a57f2b4706660": {
+        "conservation": {
+          "long": {
+            "count": 1818,
+            "maximum_vector": [
+              0.00717751152875313,
+              8.277712188531224,
+              1.2202841551781183
+            ],
+            "normalized_rms_vector": [
+              0.008919094537329014,
+              0.23305827036829374,
+              0.04414177403042853
+            ],
+            "rms_vector": [
+              0.003880574500534369,
+              4.606089632458075,
+              0.42086145197435654
+            ]
+          },
+          "short": {
+            "count": 72720,
+            "maximum_vector": [
+              0.001919639213543384,
+              1.2444165635287323,
+              0.21265348837503112
+            ],
+            "normalized_rms_vector": [
+              0.0286653535556905,
+              0.4192215993115488,
+              0.11213374278646644
+            ],
+            "rms_vector": [
+              0.0003117974576663894,
+              0.20713406302296256,
+              0.026727952495903252
+            ]
+          }
+        },
+        "heads": {
+          "S_B": {
+            "bias_axis": [
+              -0.002979229118366055,
+              0.002648797841605417,
+              -0.002687566613956284
+            ],
+            "count": 74538,
+            "mae_axis": [
+              0.016003376653450994,
+              0.020279178093845024,
+              0.01312346268103926
+            ],
+            "maximum_vector_error": 0.08817685084190008,
+            "rmse_axis": [
+              0.02009250652715403,
+              0.025129155838619036,
+              0.016011904106837775
+            ]
+          },
+          "force": {
+            "bias_axis": [
+              1.8385594439226163,
+              1.585730603243108,
+              19.213622933699455
+            ],
+            "count": 74538,
+            "mae_axis": [
+              12.816225921164852,
+              20.43345287286911,
+              22.145102493603076
+            ],
+            "maximum_vector_error": 202.18934181457834,
+            "rmse_axis": [
+              16.754426403138257,
+              26.332118532945525,
+              29.30831335647909
+            ]
+          },
+          "moment": {
+            "bias_axis": [
+              0.8102626277249592,
+              -0.3526487917354607,
+              -0.03497390063349326
+            ],
+            "count": 74538,
+            "mae_axis": [
+              4.32091591769152,
+              2.735193518844181,
+              0.6474635833311129
+            ],
+            "maximum_vector_error": 30.00525884525598,
+            "rmse_axis": [
+              5.4509903374753295,
+              3.6466334269495744,
+              0.8200829873026622
+            ]
+          },
+          "r_B": {
+            "bias_axis": [
+              -0.00029615269056724986,
+              2.4900901440323125e-05,
+              -0.01627382937609181
+            ],
+            "count": 74538,
+            "mae_axis": [
+              0.004578097088284708,
+              0.003994233147709486,
+              0.01627382937609181
+            ],
+            "maximum_vector_error": 0.025654497830631253,
+            "rmse_axis": [
+              0.0057276182454412015,
+              0.005148507873160268,
+              0.01632504141771131
+            ]
+          },
+          "v_B": {
+            "bias_axis": [
+              0.0032973339276465754,
+              0.0077211979678065154,
+              -0.015595914676717218
+            ],
+            "count": 74538,
+            "mae_axis": [
+              0.04615443026758057,
+              0.04153093907034404,
+              0.01714449694243028
+            ],
+            "maximum_vector_error": 0.17248191961934548,
+            "rmse_axis": [
+              0.05697024197814106,
+              0.05307407846468408,
+              0.0205497807529484
+            ]
+          }
+        },
+        "peak_wrench": {
+          "force": {
+            "lag_valid_windows": 1818,
+            "maximum_error_at_target_peak": 202.18934181457834,
+            "mean_error_at_target_peak": 99.45011170699648,
+            "mean_lag_seconds": 0.006757425742574232,
+            "windows": 1818
+          },
+          "moment": {
+            "lag_valid_windows": 1818,
+            "maximum_error_at_target_peak": 30.00525884525598,
+            "mean_error_at_target_peak": 15.919780691727292,
+            "mean_lag_seconds": 0.0011798679867986747,
+            "windows": 1818
+          }
+        },
+        "status": "measured",
+        "windows": 1818
+      }
+    },
+    "selection_metric": 1.5645030486592986,
+    "split": "test",
+    "status": "measured",
+    "units": {
+      "S_B": "kg m^2/s",
+      "force": "N",
+      "moment": "N m",
+      "r_B": "m",
+      "v_B": "m/s"
+    },
+    "weighting": "window-weighted; overlapping endpoints counted per window",
+    "windows": 1818
+  },
+  "root_discovery_followup": {
+    "total_tests_passed": 39,
+    "seconds": 10.82,
+    "new_tests": 5,
+    "automatic_vs_explicit": "identical artifacts, normalization and window counts"
+  }
+}

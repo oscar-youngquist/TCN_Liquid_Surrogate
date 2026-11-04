@@ -1,0 +1,41 @@
+{
+  "seed": 1,
+  "shard_rows": 8192,
+  "sources": [
+    {
+      "path": "/data/campaign/robot/round-00000/collection/attempt-0000",
+      "group": "campaign-round-00000",
+      "split": "train"
+    },
+    {
+      "path": "/data/campaign/robot/round-00001/collection/attempt-0000",
+      "group": "campaign-round-00001",
+      "split": "validation"
+    },
+    {
+      "path": "/data/campaign/robot/round-00002/collection/attempt-0000",
+      "group": "campaign-round-00002",
+      "split": "test"
+    }
+  ],
+  "model": {
+    "property_dim": 24,
+    "embedding_dim": 32,
+    "channels": 64,
+    "kernel_size": 5,
+    "dilations": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "long_intervals": 40
+  },
+  "fractions": [
+    0.8,
+    0.1,
+    0.1
+  ],
+  "held_out_payloads": []
+}

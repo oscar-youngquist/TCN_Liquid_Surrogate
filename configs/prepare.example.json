@@ -1,0 +1,25 @@
+{
+  "seed": 1,
+  "shard_rows": 8192,
+  "model": {
+    "property_dim": 24,
+    "embedding_dim": 32,
+    "channels": 64,
+    "kernel_size": 5,
+    "dilations": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "long_intervals": 40
+  },
+  "fractions": [
+    0.8,
+    0.1,
+    0.1
+  ],
+  "held_out_payloads": [],
+  "collection_root": "/data/liquid_collection/campaign"
+}
