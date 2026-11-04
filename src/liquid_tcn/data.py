@@ -1,6 +1,6 @@
 """Diagnostic episode extraction with recorded causal motion retained.
 
-The reviewed extraction/interval/window semantics live in ported.discrete.data.
+Episode extraction, interval assembly, and window eligibility live in ported.discrete.data.
 This adapter only retains z/held inputs and applies same-tick, right-continuous
 held-input events; it never interpolates from future samples.
 """

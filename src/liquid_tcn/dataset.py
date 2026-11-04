@@ -39,6 +39,8 @@ class WindowDataset(Dataset):
 
     def __getstate__(self):
         state = self.__dict__.copy()
+        # Spawned workers reopen their own mappings instead of pickling live
+        # mmap/cache state. _local also guards against inherited state after fork.
         state.update(index=None, cache=OrderedDict(), pid=None)
         return state
 
@@ -53,6 +55,8 @@ class WindowDataset(Dataset):
         if key in self.cache:
             self.cache.move_to_end(key)
         else:
+            # Read-only .npy mappings avoid repeated NPZ decompression. LRU eviction
+            # bounds open shard mappings per worker; it does not materialize a dataset.
             self.cache[key] = np.load(self.path / f'series-{series:06d}-{shard:06d}.npy', mmap_mode='r', allow_pickle=False)
             if len(self.cache) > self.cache_size:
                 self.cache.popitem(last=False)
@@ -63,6 +67,8 @@ class WindowDataset(Dataset):
             raise IndexError(index)
         self._local()
         entry = self.index[index]
+        # A compact index stores just series ID and inclusive final row. Overlap
+        # is represented by shared shard rows, not duplicated full training windows.
         sid, end = int(entry['series']), int(entry['end'])
         begin = end - self.input_length + 1
         shard_rows = self.manifest['shard_rows']
@@ -74,6 +80,9 @@ class WindowDataset(Dataset):
             pieces.append(np.array(self._shard(sid, shard)[offset:offset + take], copy=True))
             pos += take
         rows = np.concatenate(pieces)
+        # Copy only this window (possibly across shard boundaries). Keep all
+        # 289 motion inputs but only the final 41 labels/recorded physics states:
+        # these align exactly with the model's RF-1 contextual-output trim.
         endpoints = rows[self.rf - 1:]
         details = self.series[sid]
         # Preserve metadata at float64; network inputs alone are converted to FP32.
@@ -104,6 +113,8 @@ class EpochSampler(Sampler):
             return
         rng = random.Random(self.seed + self.epoch * 1000003)
         a = rng.randrange(1, n + 1)
+        # An affine map modulo n is a permutation exactly when gcd(a,n)=1.
+        # This visits every window once with constant-memory reproducible state.
         while math.gcd(a, n) != 1:
             a = a % n + 1
         b = rng.randrange(n)
@@ -142,6 +153,8 @@ def make_loader(dataset, batch_size=16, num_workers=0, prefetch_factor=2,
                 pin_memory=True, seed=1, sampler=None):
     options = dict(batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory and torch.cuda.is_available(),
                    worker_init_fn=seed_worker, generator=torch.Generator().manual_seed(seed), sampler=sampler)
+    # PyTorch forbids worker prefetch/persistence options with zero workers.
+    # A dedicated generator seeds workers without consuming model RNG state.
     if num_workers:
         options.update(prefetch_factor=prefetch_factor, persistent_workers=True, multiprocessing_context='spawn')
     return DataLoader(dataset, **options)

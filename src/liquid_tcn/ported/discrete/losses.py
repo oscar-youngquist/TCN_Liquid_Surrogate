@@ -27,6 +27,10 @@ def mv(R, v):
 
 
 def _result(residual, scales, valid):
+    # Residual axes are [..., equation=(r,P,H), xyz]. Each equation has its
+    # own dimensional scale; average over valid intervals/windows, not xyz.
+    # The denominator clamp only makes empty reductions defined. has_valid is
+    # returned separately so callers can reject empty evaluations.
     normalized = residual / scales.unsqueeze(-1)
     masked = torch.where(valid[..., None, None], normalized, torch.zeros_like(normalized))
     count = valid.sum()
@@ -83,20 +87,53 @@ def discrete_constraints(*, r_B, v_B, S_B, F_average_B, tau_average_O_B,
     m=clean(mass); dt=clean(h); q=clean(q_WB_wxyz)
     dims=clean(interior_dimensions); A=clean(reference_W)[:,None]
     R=quaternion_matrix(q)
+    # Convert predicted body-coordinate state to inertial COM quantities:
+    # X = x_O + R r, U = u_O + R (v + omega_B x r), P = m U.
+    # Here v = dr_B/dt. The transport term omega_B x r is essential because
+    # B rotates; v alone is not the COM velocity relative to the base.
     X=x+mv(R,r); U=u+mv(R,v+torch.linalg.cross(w,r)); P=m[...,None]*U
+    # S is internal angular momentum about the liquid COM. Add its orbital
+    # part to obtain H_A = R S + (X-A) x P about one FIXED world point A.
+    # Using a moving reference would require extra transport terms. The nearby
+    # recorded initial base origin also avoids large world-origin cancellations.
     H=mv(R,S)+torch.linalg.cross(X-A,P)
+    # Each wrench is already the average over the COMPLETED interval ending
+    # at endpoint j+1, expressed in that endpoint's base frame. Thus its world
+    # impulse is h R_{j+1} F_bar, not a trapezoid of neighboring wrench labels.
+    # Shift the torque impulse from the fixed endpoint origin to fixed A:
+    # I_tau,A = h R_{j+1} tau_bar + (x_O,j+1 - A) x I_F.
     IF=dt[...,None]*mv(R[:,1:],clean(F_average_B))
     Itau=dt[...,None]*mv(R[:,1:],clean(tau_average_O_B))+torch.linalg.cross(x[:,1:]-A,IF)
+    # Constant actual mass and uniform gravity are verified below. Gravity's
+    # linear impulse is h m g. Its angular impulse about A uses trapezoidal
+    # COM quadrature: G = h ((X_j+X_{j+1})/2 - A) x (m g).
+    # Only gravity moment and dr_B/dt use trapezoidal quadrature here.
     mg=m[:,:1,None]*g[:,:1]
     G=dt[...,None]*torch.linalg.cross((X[:,:-1]+X[:,1:])/2-A,mg.expand_as(X[:,1:]))
     dr=dt[...,None]*(v[:,:-1]+v[:,1:])/2
+    # The three discrete equations are:
+    #   delta r - h (v_j + v_{j+1})/2 = 0,
+    #   delta P - h m g + I_F = 0,
+    #   delta H_A - G + I_tau,A = 0.
+    # Plus signs on reaction impulses matter: labels are liquid-on-robot,
+    # so the equal-and-opposite force on the liquid is -F. All predicted
+    # states at BOTH endpoints remain in autograd, as do both wrench heads.
     residual=torch.stack((r[:,1:]-r[:,:-1]-dr,
                           P[:,1:]-P[:,:-1]-dt[...,None]*mg+IF,
                           H[:,1:]-H[:,:-1]-G+Itau),-2)
     duration=dt.sum(-1)
+    # Summing adjacent equations telescopes the endpoint differences. Sum
+    # recorded-interval impulses directly for the whole 200 ms constraint;
+    # interior predictions still contribute through dr and gravity quadrature.
+    # Do not treat interval averages as instantaneous or next-interval forces.
     long_residual=torch.stack((r[:,-1]-r[:,0]-dr.sum(1),
         P[:,-1]-P[:,0]-duration[:,None]*mg[:,0]+IF.sum(1),
         H[:,-1]-H[:,0]-G.sum(1)+Itau.sum(1)),-2)
+    # Use the container diagonal L, weight F0=m|g|, torque tau0=F0 L,
+    # and gravitational speed u0=sqrt(|g| L). For duration T, the scales
+    # (T u0, T F0, T tau0) have units (m, kg m/s, kg m^2/s), matching
+    # (r, P, H) residuals. Squared normalized residuals are dimensionless;
+    # short and long horizons use their own durations, not one shared scale.
     L=torch.linalg.vector_norm(dims,dim=-1)
     gnorm=torch.linalg.vector_norm(g[:,0],dim=-1)
     F0=m[:,0]*gnorm; tau0=F0*L; u0=torch.sqrt((gnorm*L).clamp_min(1e-30))
@@ -108,6 +145,10 @@ def discrete_constraints(*, r_B, v_B, S_B, F_average_B, tau_average_O_B,
     assumptions=constant_mass & uniform_gravity & (gnorm > 0)
     assumptions &= (torch.isfinite(interior_dimensions) & (interior_dimensions > 0)).all(-1)
     assumptions &= torch.isfinite(reference_W).all(-1) & finite_state.all(-1)
+    # Validity is recorded-data eligibility, never a function of prediction
+    # accuracy. Every interval needs two contextual endpoints in one episode;
+    # a long constraint requires ALL intervals, so resets/gaps cannot be bridged.
+    # Window-wide mass/gravity/finite-state assumptions also gate short losses.
     endpoint_ok=state_valid.bool() & history_valid.bool() & finite_state
     valid=interval_valid.bool() & finite_interval & endpoint_ok[:,:-1] & endpoint_ok[:,1:]
     valid &= (episode_id[:,1:]==episode_id[:,:-1]) & assumptions[:,None]

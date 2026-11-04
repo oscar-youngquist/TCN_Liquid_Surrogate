@@ -1,1 +1,1 @@
-"""Reviewed collection code; see docs/imports.json for provenance."""
+"""Collection-format and physics utilities; see docs/provenance.md for attribution."""

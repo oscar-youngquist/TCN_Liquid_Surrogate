@@ -25,10 +25,14 @@ class ModelConfig:
 
     @property
     def receptive_field(self):
+        # Each causal convolution adds (kernel_size-1)*dilation past samples;
+        # two convolutions per block give RF=249 with the default configuration.
         return 1 + 2 * (self.kernel_size - 1) * sum(self.dilations)
 
     @property
     def input_length(self):
+        # RF samples yield the first fully contextual endpoint; another K
+        # samples yield K more endpoints for K consecutive physics intervals.
         return self.receptive_field + self.long_intervals
 
 
@@ -38,9 +42,13 @@ class CausalConv(nn.Conv1d):
         return (self.kernel_size[0] - 1) * self.dilation[0]
 
     def forward(self, x):
+        # Left-only padding preserves time indices and forbids future inputs.
+        # Training discards outputs whose receptive fields still touch padding.
         return super().forward(F.pad(x, (self.context, 0)))
 
     def step(self, x, cache):
+        # Cache this convolution's INPUT activations, not its output. Keeping
+        # (k-1)*d past samples reproduces its batch convolution at the next time.
         joined = torch.cat((cache, x), -1)
         y = F.conv1d(joined, self.weight, self.bias, dilation=self.dilation)
         return y, joined[..., -self.context:] if self.context else joined[..., :0]
@@ -69,6 +77,9 @@ class LiquidTCN(nn.Module):
                                                 nn.Linear(c.channels, 3)) for _ in HEADS])
 
     def forward(self, motion, properties, contextual_only=True):
+        # motion is [B,T,15]; static recorded properties are [B,24]. Broadcasting
+        # the property embedding over time introduces no future motion information.
+        # Conv1d uses [B,C,T], while the public interface uses time dimension 1.
         embedding = self.embedding(properties)[:, None].expand(-1, motion.shape[1], -1)
         x = self.projection(torch.cat((motion, embedding), -1).transpose(1, 2))
         for block in self.blocks:
@@ -78,6 +89,8 @@ class LiquidTCN(nn.Module):
             if x.shape[1] < self.config.receptive_field:
                 raise ValueError('Incomplete causal history')
             x = x[:, self.config.receptive_field - 1:]
+        # Independent heads share the temporal features: output is [B,N,5,3]
+        # in normalized units (N=41 for the default contextual training pass).
         return torch.stack([head(x) for head in self.heads], -2)
 
 
@@ -118,6 +131,8 @@ class CachedInference:
         out = torch.stack([head(x[..., 0]) for head in self.model.heads], -2)
         out = self.norm.denormalize('targets', out)
         self.age += 1
+        # Zeros initialize caches after a reset but never constitute valid
+        # history: withhold predictions until this environment has RF real samples.
         valid = self.age >= self.model.config.receptive_field
         out = out[:, :4].flatten(1)
         return torch.where(valid[:, None], out, torch.full_like(out, float('nan'))), valid

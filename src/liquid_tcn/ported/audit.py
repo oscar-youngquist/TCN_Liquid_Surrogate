@@ -9,7 +9,10 @@ from .storage import digest
 
 
 def interior_mask(candidates, boundaries, start, end, history=249, grid_dt=.005, margin=.0001):
-    """PDF Eq. 38: every tap must be interior; caller supplies episode-local data.
+    """Require every history tap to lie inside the episode and away from events.
+
+    Tap j is candidates - j*grid_dt. Its distance to the nearest boundary
+    must exceed margin. This diagnostic is not the training window mask.
 
     Boundaries must include feature updates and reconstruction knots. Entire
     history validity (including spills) must be checked separately by the caller.

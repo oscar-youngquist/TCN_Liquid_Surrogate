@@ -1,4 +1,4 @@
-"""Read-only, bounded chunk/grid preprocessing built on the reviewed data functions."""
+"""Read-only preprocessing of collection streams into bounded shards and window indices."""
 from collections import Counter
 from itertools import groupby
 import heapq
@@ -29,7 +29,7 @@ INDEX_DTYPE = np.dtype([('series', '<i8'), ('end', '<i8')])
 
 
 def verify_attempt(path):
-    """Use ported completion verification, additionally reconcile both indices."""
+    """Verify stream completion, chunk hashes, and agreement between chunk indices."""
     path = Path(path)
     if not verified_complete(path):
         raise IncompleteAttemptError(f'Incomplete attempt: {path}')
@@ -58,6 +58,9 @@ def verify_attempt(path):
 
 def iter_merged_rows(path):
     """Bounded equivalent of ported merged_rows: one decoded chunk per stream."""
+    # Ordering needs both tick and record sequence: terminal-before-reset
+    # records can share a tick. Merge duplicate stream records by identity,
+    # checking overlapping fields rather than silently choosing one copy.
     key = lambda r: (int(r['native_step']), int(r['record_sequence']))
     streams = [stream_rows(Path(path) / sub) for sub in ('', 'boundaries', 'events')]
     for identity, copies in groupby(heapq.merge(*streams, key=key), key=key):
@@ -95,6 +98,9 @@ def endpoint_row(state, interval, native_mode=False):
     velocity = state['velocity_W']
     held = state.get('held_acceleration_W')
     z = state.get('z')
+    # Use recorded causal features when available. Reconstruction is only a
+    # rotation of recorded gravity, velocities, and held accelerations; never
+    # finite-difference future velocities or infer instantaneous acceleration.
     if z is None:
         if held is None:
             raise ValueError('Missing both recorded z and held acceleration; no future reconstruction allowed')
@@ -128,6 +134,9 @@ def endpoint_row(state, interval, native_mode=False):
                 moment = part['h'] * (rot @ part['moment_interval_average_O_B']) + np.cross(s['x_O_W'] - anchor, force)
             IF += force
             J += moment
+        # All split pieces now share a world-frame reference at the FINAL base
+        # origin. Rotate their summed impulses into its endpoint frame and divide
+        # by total duration once, preserving completed-interval average semantics.
         out['targets'][:2] = np.stack((R.T @ IF, R.T @ J)) / interval['h']
         out['h'] = interval['h']
         out['interval_valid'] = interval['valid'] and np.isfinite(out['targets'][:2]).all()
@@ -157,6 +166,9 @@ class SeriesWriter:
                 np.isclose(row['mass'], self.mass, rtol=1e-7, atol=1e-9) and
                 np.allclose(row['gravity_W'], self.gravity, rtol=1e-7, atol=1e-9) and
                 np.isclose(row['mass'], self.metadata['properties'][3], rtol=1e-6, atol=1e-8))
+        # Consecutive valid intervals grow the real-history run. A gap/invalid
+        # row restarts it; episode changes get a separate writer. No reset padding
+        # is accepted. RF valid rows certify an endpoint; RF+K certify a window.
         contiguous = self.previous_tick is not None and int(row['tick']) - self.previous_tick == stride
         self.run = self.run + 1 if contiguous and row['interval_valid'] and row['state_valid'] and self.run else int(row['state_valid'])
         row['history_valid'] = self.run >= self.model.receptive_field
@@ -216,6 +228,9 @@ def prepare(config, output):
             source.update(payload_id=meta['payload_id'], robot=meta['robot'],
                           hashes=verify_attempt(source['path']), metadata=meta)
             sources.append(source)
+    # Assign whole collection groups before emitting overlapping windows.
+    # Retry grouping and held-out payload rules keep related trajectories out
+    # of other splits; random window-level splitting would leak near duplicates.
     assign_splits(sources, config.get('seed', 1), config.get('fractions', (.8, .1, .1)),
                   config.get('held_out_payloads', ()))
     # Reject retries assigned to different user groups when the collector identity matches.
@@ -313,6 +328,9 @@ def prepare(config, output):
                     for block in iter(lambda: src.read(1024 * 1024), b''):
                         dest.write(block)
                 total += s['windows']
+                # Fit only on training series with eligible windows. Read each stored
+                # row once, using validity masks, rather than repeatedly counting it for
+                # every overlapping window. Held-out splits never influence these moments.
                 if split == 'train' and s['windows']:
                     stats['properties'].add(np.asarray(s['properties'])[None])
                     for shard in range(s['shards']):

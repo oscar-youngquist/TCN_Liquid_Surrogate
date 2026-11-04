@@ -234,14 +234,14 @@ def plot_case(output,name,curves):
 
 def write_report(output,report):
     lines=['# Discrete Newton–Euler validation v1','',
-        f"Revised discrete objective verdict: **{report['revised_discrete_verdict']}** within the tested scope.",
-        '', 'This evaluates recorded SPH targets against the revised endpoint/interval-average objective. It does not validate a trained surrogate, deployment-time alignment, closed-loop control or large-scale reliability.', '',
+        f"Discrete objective verdict: **{report['revised_discrete_verdict']}** within the tested scope.",
+        '', 'This evaluates recorded SPH targets against the endpoint/interval-average objective. It does not validate a trained surrogate, deployment-time alignment, closed-loop control or large-scale reliability.', '',
         'All arithmetic is float64. Stored float32 precision cannot be recovered by casting. The native angular floor uses recorded world-origin angular momentum shifted to a nearby fixed point, so it includes its recording precision floor. No instantaneous reconstruction, acceleration derivatives or JVPs enter this analysis.', '',
         '## Method and scales','',
         'Rows are completed (t[k-1],t[k]] intervals, with endpoint state at t[k]. Force and moment are liquid-on-robot average reactions in B[k]; the moment is about the fixed endpoint base origin. For split intervals, impulses are combined in a common world reference before conversion to the endpoint frame. Terminal endpoints are retained; histories and windows never cross per-environment resets.', '',
-        'L is the Euclidean diagonal of the nominal interior. F0=m|g|, tau0=F0 L, u0=sqrt(|g| L). Residual scales are u0 T, F0 T, tau0 T, with T=5 ms or 200 ms. RMS and p95 use Euclidean vector norms. These differ from the historical continuous-report scales.', '',
+        'L is the Euclidean diagonal of the nominal interior. F0=m|g|, tau0=F0 L, u0=sqrt(|g| L). Residual scales are u0 T, F0 T, tau0 T, with T=5 ms or 200 ms. RMS and p95 use Euclidean vector norms.', '',
         'Criteria frozen before evaluation: total normalized RMS ≤10%, total p95 ≤10%, additional RMS over matched native ≤5%, additional p95 ≤10%. Each environment needs ≥100 valid 249-sample histories, ≥100 short intervals and ≥40 long windows. Windows overlap and are not independent statistical trials.', '',
-        'Native coupling impulses are measured independently by the recorder. The inspected SPH order kicks velocity (including gravity), applies coupling, then drifts position. Native gravity angular impulse therefore uses native interval-start CoM. Recovery from precomputed balance fields is reported only as a cross-check. Native kinematics uses native endpoint-velocity trapezoids; the additional kinematic error includes coarse velocity quadrature.', '',
+        'Native coupling impulses are measured independently by the recorder. The recorded SPH solver order kicks velocity (including gravity), applies coupling, then drifts position. Native gravity angular impulse therefore uses native interval-start CoM. Recovery from precomputed balance fields is reported only as a cross-check. Native kinematics uses native endpoint-velocity trapezoids; the additional kinematic error includes coarse velocity quadrature.', '',
         '## Per-environment decisions','',
         '| Case / env / episode | Histories | 5 ms intervals | 200 ms windows | Short r / P / H | Long r / P / H |',
         '|---|---:|---:|---:|---|---|']
@@ -261,14 +261,11 @@ def write_report(output,report):
                     cols=' | '.join(f"{100*v[k]['normalized_rms']:.4g}" for k in ('native_floor','additional','aggregation_frame','gravity_quadrature'))
                     lines.append(f"| {name} / {e['environment']} | {horizon} / {ch} | {triple} | {cols} |")
     lines+=['','## Interpretation','',
-        'The revised objective is direct SPH supervision of r, v, S and the two interval-average wrench heads, plus short and long discrete consistency. It intentionally replaces the pointwise Newton/Euler JVP objective. Historical instantaneous-wrench/JVP flags remain unchanged and are included separately in the machine-readable summary.', '',
+        'Training combines direct supervision of r, v, S and the two interval-average wrench heads with short and long discrete consistency. The machine-readable summary also includes legacy instantaneous-wrench/JVP flags; those flags do not determine discrete constraint validity.', '',
         'For failure attribution, compare the measured native floor, aggregation/frame contribution (including endpoint momentum reconstruction and velocity quadrature), and gravity quadrature. Small differences comparable to float32 recording precision should not be described as additional physical forces. Empty or insufficient valid sets are inconclusive, never a pass.', '',
-        '## Reproduction','', '```bash',
-        'SIMULATOR=genesis_pact_water MPLCONFIGDIR=/tmp/liquid-mpl \\',
-        '/home/oyoungquist/.conda/envs/genesis_lr/bin/python -m liquid_tcn.ported.discrete.analyze \\',
-        '  --source runs/liquid_validation_planes10_4_20261103 --output runs/discrete_newton_euler_v1_NEW',
-        '```','',
-        'Use a fresh output directory. `--prepare-only` freezes criteria without evaluating data; rerun with `--evaluate-prepared` to evaluate that frozen directory. Raw trajectories and previous reports are read-only. Each case has a diagnostic PNG. See `provenance.json` and `checksums.json` for source/data identities. No simulation or training is launched by this command.','']
+        '## Reproduction','',
+        'The command and source/data hashes for this analysis are recorded in `provenance.json` and `checksums.json`. Each case has a diagnostic PNG. Raw recordings are opened read-only.', '',
+        'For the standalone package, run `python -m pytest -q` for synthetic physics regressions and `liquid-tcn evaluate --help` for checkpoint evaluation. The local physics reference is `docs/liquid_discrete_constraints.md`.', '']
     (output/'report.md').write_text('\n'.join(lines))
 
 

@@ -1,4 +1,4 @@
-"""Supervised pretraining followed by a discrete-physics ramp; no automatic full run."""
+"""Supervised pretraining, discrete-physics fine-tuning, logging, and resumable checkpoints."""
 import copy
 from dataclasses import asdict
 import json
@@ -31,12 +31,17 @@ DEFAULTS = dict(seed=1, batch_size=16, num_workers=0, prefetch_factor=2, pin_mem
 
 
 def weights(config, update):
+    # Supervision always stays active. After pretraining, linearly ramp both
+    # physics coefficients from zero to their configured maxima by update.
     ramp = min(1., max(0., (update - config['pretrain_updates'])/max(1, config['ramp_updates'])))
     return config['lambda_short']*ramp, config['lambda_long']*ramp
 
 
 def precision_check(model, batch, norm, config):
     """Compare network+physics losses and full parameter gradients; gate optional AMP."""
+    # Probe copies leave trained parameters untouched; restoring RNG makes
+    # this diagnostic neutral to the reproducible training/resume sequence.
+    # Compare full parameter gradients too: similar losses can hide bad grads.
     state = rng_state()
     outputs = {}
     modes = ['float64', 'float32'] + (['amp'] if config['amp'] else [])
@@ -94,11 +99,16 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         raise ValueError('Model configuration differs from prepared window geometry; prepare a matching dataset')
     if config['epochs'] is not None and (not isinstance(config['epochs'], int) or config['epochs'] < 1):
         raise ValueError('epochs must be null or a positive integer')
+    # Epoch mode includes the last partial batch. Resolve it once so the
+    # learning-rate schedule and checkpoints share the same update horizon.
     total_updates = (config['epochs'] * math.ceil(len(training) / config['batch_size'])
                      if config['epochs'] is not None else config['updates'])
     norm = Normalization(training.manifest['normalization'])
     model = LiquidTCN(ModelConfig(**training.manifest['model'])).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
+    # LambdaLR expects a multiplier of the optimizer's base pretrain_lr.
+    # At the phase boundary switch to physics_lr, then apply the chosen decay.
+    # This LR schedule is independent of the gradual physics-weight ramp.
     def learning_rate(step):
         if step < config['pretrain_updates']:
             return 1.
@@ -111,6 +121,9 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     sampler = EpochSampler(len(training), config['seed'])
     provenance = digest(Path(data)/'manifest.json')
     update, best, stale = 0, float('inf'), 0
+    # Exact continuation requires more than model weights: optimizer moments,
+    # scheduler phase, consumed sampler position, and RNG states must agree.
+    # Reject changed data/configuration rather than silently changing the run.
     if resume:
         saved = load_checkpoint(resume, device)
         if saved['data_manifest_sha256'] != provenance or saved['config'] != config:
@@ -138,6 +151,9 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     writer = SummaryWriter(log_dir=str(output / 'tensorboard'), purge_step=update + 1 if resume else None)
     writer.add_text('run/configuration', json.dumps(config, indent=2), update)
 
+    # Atomic replacement prevents partially written checkpoints. TensorBoard
+    # is flushed alongside model/optimizer state; purge_step above hides stale
+    # log events beyond the restored checkpoint when resuming an interrupted run.
     def save(name):
         writer.flush()
         atomic_save(output/name, dict(format_version=1, model=model.state_dict(), model_config=asdict(model.config),
@@ -160,16 +176,23 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                 timing['loader_seconds'] += time.perf_counter()-tick
                 train_start = time.perf_counter()
                 batch = to_device(batch, device)
+                # Validation switches to eval mode, so restore training mode each step.
+                # Clear previous gradients; each backward here represents one batch update.
                 model.train(); optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config['amp']):
                     pred = model(norm.normalize('motion', batch['motion']), norm.normalize('properties', batch['properties']))
                 short, long = weights(config, update)
                 result = objective(pred.float(), batch, norm, short, long, config['supervised'],
                                    config['huber_delta'], config['physics_dtype'])
+                # Backpropagate the combined supervised + short + long objective once.
+                # Clip the global parameter-gradient norm before AdamW; the returned norm
+                # is pre-clipping. Nonfinite gradients raise instead of corrupting weights.
                 result['loss'].backward()
                 grad = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip'], error_if_nonfinite=True)
                 used_lr = optimizer.param_groups[0]['lr']
                 optimizer.step(); scheduler.step()
+                # Acknowledge only optimizer-consumed samples. DataLoader may prefetch
+                # future indices; saving its iterator progress would skip data on resume.
                 sampler.advance(len(batch['motion'])); update += 1
                 if device.type == 'cuda':
                     torch.cuda.synchronize()
@@ -185,6 +208,9 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     vstart = time.perf_counter()
                     last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'])
                     timing['validation_seconds'] += time.perf_counter()-vstart
+                    # Select checkpoints using fixed normalized supervised MSE, independent
+                    # of the changing physics weights (and the training MSE/Huber choice).
+                    # Patience counts validation events, not individual optimizer updates.
                     metric = last_validation['selection_metric']
                     if metric is None or not math.isfinite(metric):
                         raise ValueError('Empty or nonfinite validation metric')

@@ -11,6 +11,8 @@ def rotate(q, v, inverse=False):
 
 
 def shift_moment(force, moment_A, x_A, x_O):
+    # Moment transport: tau_O = tau_A + (x_A-x_O) x F. The same identity
+    # applies to angular impulses when F denotes a linear impulse.
     return moment_A + torch.linalg.cross(x_A-x_O, force)
 
 
@@ -19,8 +21,13 @@ def aggregates(x, u, mass, xO, q, uO, omega):
     m = mass.sum(-1, keepdim=True)
     xc = (mass[..., None]*x).sum(-2)/m
     uc = (mass[..., None]*u).sum(-2)/m
+    # Internal angular momentum about the mass-weighted COM:
+    # S_W = sum_i (x_i-x_COM) x m_i (u_i-u_COM). This excludes orbital
+    # angular momentum, which is added separately for fixed-reference losses.
     S = torch.linalg.cross(x-xc[:, None], mass[..., None]*(u-uc[:, None])).sum(-2)
     r = rotate(q, xc-xO, True)
+    # Differentiate r_B = R^T(x_COM-x_O): subtract omega_B x r_B to
+    # account for frame rotation. omega passed to this helper is in WORLD.
     v = rotate(q, uc-uO, True)-torch.linalg.cross(rotate(q, omega, True), r)
     return dict(mass=m[:, 0], com_W=xc, com_vel_W=uc, momentum_W=m*uc,
                 angular_momentum_world_origin_W=torch.linalg.cross(x, mass[..., None]*u).sum(-2),
@@ -28,6 +35,9 @@ def aggregates(x, u, mass, xO, q, uO, omega):
 
 
 def coupling_impulse(x, before, after, mass, origin):
+    # The fluid receives m*(after-before); Newton's third law gives the
+    # opposite liquid-on-robot impulse. Despite the local name force, this
+    # function returns impulses, with no division by a timestep.
     reaction = mass[..., None]*(before-after)
     force = reaction.sum(-2)
     moment_world = torch.linalg.cross(x, reaction).sum(-2)
@@ -56,6 +66,9 @@ class CausalClock:
     def advance(self, velocities, dt):
         self.age += 1
         event = self.age.remainder(self.feature_ticks) == 0
+        # Update only after a complete feature interval. Between events the
+        # last completed average stays held; reset entries remain invalid until
+        # their own first interval completes, independently of other environments.
         self.held[event] = (velocities[event]-self.anchor[event])/(dt*self.feature_ticks)
         self.anchor[event] = velocities[event]
         self.valid[event] = True

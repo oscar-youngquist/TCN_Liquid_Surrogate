@@ -63,16 +63,16 @@
       "sha256": "b630e1f180f02908fe927c80a28dd2bba84fa7e71725c263aa103432ca9dd666"
     }
   ],
-  "adaptation": "Only package import paths changed in ported modules.",
+  "adaptation": "Package imports adapted. Local documentation, comments, docstrings, and diagnostic report text describe this package. Numerical physics and data semantics are preserved. File hashes identify the original source files, not local destinations.",
   "training_specification": {
     "name": "hardpact_liquid_wrench_training_specification.pdf",
     "sha256": "370a3aac7a68bb5f02f0f6167167151525ede6a2905143e80dc0aa07c65167c7",
     "architecture": "Section 6, v2.0, November 3 2026",
-    "override": "User instruction selects validated discrete objectives over instantaneous/JVP and trapezoidal wrench losses; no HardPACT integration."
+    "role": "Historical architecture source, not distributed or required to use this package. The package specification is docs/architecture.md; objectives are defined in docs/liquid_discrete_constraints.md."
   },
   "production_adaptations": [
     "liquid_tcn.data retains recorded z and held values, with same-tick held-event updates",
-    "Bounded heap merge replaces diagnostic whole-attempt buffering; reviewed extraction/grid functions run on one closed grid bin",
+    "Bounded heap merge replaces diagnostic whole-attempt buffering; episode extraction/grid functions run on one closed grid bin",
     "Compact split assembly follows analyze.prepare_intervals; native debug mode sums recorded world impulses because its labels use coupling-phase poses",
     "Streaming continuous-history eligibility is checked against reference eligible_windows; rows are stored once in mmap shards"
   ]

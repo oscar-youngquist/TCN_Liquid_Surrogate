@@ -1,15 +1,13 @@
 # Discrete liquid-wrench physics objectives
 
-The current objective is **direct SPH supervision plus short- and long-interval
-Newton–Euler consistency**. It intentionally replaces the pointwise Newton/Euler
-JVP constraints. The model predicts completed **5 ms interval-average reaction
+The objective combines **supervision from smoothed-particle hydrodynamics (SPH)
+recordings with short- and long-interval Newton–Euler consistency**. The model predicts completed **5 ms interval-average reaction
 wrenches** and endpoint liquid states at 200 Hz. It need not reproduce individual
 SPH-substep forces.
 
-Implementation: [`liquid_collection/discrete/losses.py`](../liquid_collection/discrete/losses.py).
-Validation: [v1 findings](liquid_discrete_validation_v1.md).
-The [continuous reconstruction/JVP experiment](liquid_format_experiment.md) is a
-historical diagnostic; its flags and results retain their original meanings.
+Implementation: [discrete losses](../src/liquid_tcn/ported/discrete/losses.py) and
+[combined objective](../src/liquid_tcn/objectives.py). See [validation results](validation.md)
+for numerical tests and [architecture](architecture.md) for tensor alignment.
 
 ## Endpoint and interval contract
 
@@ -19,7 +17,7 @@ The moment is about the **fixed world location of the endpoint base origin**,
 not a continuously moving reference point. `R_k` maps base to world. Recorded
 quaternions are `wxyz`; the module normalizes them before constructing `R`.
 
-The five supervised heads remain:
+The five supervised heads are:
 
 | Head | Target and meaning |
 |---|---|
@@ -33,8 +31,8 @@ Use actual solver particle mass (summed over particles), recorded gravity, and
 recorded base origin position/velocity/angular velocity. Mass must be positive
 and constant and gravity spatially uniform and constant within an eligible
 trajectory. The recorder supports a single liquid with uniform solver gravity
-and no external fluid fields; the new loader verifies mass/gravity consistency
-in each eligible episode and between native and compact data. The module also
+and no external fluid fields; preprocessing verifies mass/gravity consistency
+in each eligible episode. The module also
 checks these assumptions in each supplied window. Invalid assumptions mask the
 window; they must not be interpreted as a low-loss success.
 
@@ -100,23 +98,38 @@ u0   = sqrt(|g| L)
 scales = (u0 T, F0 T, tau0 T) for (e_r, e_P, e_H)
 ```
 
-`T` is the actual interval/window duration, 0.005 or 0.2 seconds for the approved
-training horizons. These are **different scales from the historical continuous
-and trapezoidal report**. Each channel loss is the mean squared Euclidean norm
-of its normalized residual over valid samples. The returned total sums the
-three channel losses; callers may weight channels explicitly.
+`T` is the actual interval/window duration: 0.005 or 0.2 seconds with the default
+configuration. Each channel loss is the mean squared Euclidean norm of its
+normalized residual over valid samples. The physics loss sums the three channel
+losses. The scales have units of position, linear momentum, and angular momentum,
+respectively, so the normalized residuals are dimensionless.
 
-A training integration should retain the direct supervised losses on all five
-heads and add weighted short/long consistency:
+Training supervises all five heads and adds weighted short/long consistency:
 
 ```text
 L_total = L_supervised(r, v, S, F_interval_average, tau_interval_average)
           + lambda_short L_short + lambda_long L_long
 ```
 
-This change implements the reusable consistency terms, not a training loop,
-network, selected training weights or HardPACT deployment. Do not drop direct
-force/moment supervision or relabel those targets as instantaneous samples.
+For normalized prediction `y_hat`, normalized target `y`, and vector validity
+mask `M[b,k,h]`, the supervised MSE is:
+
+```text
+L_supervised = sum_b,k,h,c M[b,k,h] * (y_hat[b,k,h,c] - y[b,k,h,c])^2
+               / (3 * sum_b,k,h M[b,k,h])
+```
+
+Here `h` indexes the five heads and `c` indexes xyz. Each valid scalar has equal
+weight. Huber supervision replaces each squared error with `e^2/2` for
+`|e| <= delta` and `delta*(|e|-delta/2)` otherwise. The threshold is in normalized
+units. Statistics are fitted only on the training split. Every head must have at
+least one valid label in a training batch.
+
+Predictions are converted back to physical units before physics evaluation.
+Both endpoints and all five heads remain differentiable. Physics arithmetic runs
+outside autocast, in float64 by default. Supervised pretraining sets both physics
+weights to zero; a linear ramp then raises them to the configured values while
+retaining supervision. See [training configuration](configuration.md) for defaults.
 
 ## API and masks
 
@@ -136,12 +149,13 @@ the interval ending at the corresponding endpoint from index 1 onward. Supply
 `omega_B = R^T omega_W`; the collector's `velocity_W` concatenates world linear
 and angular velocity. There are no recorded-momentum arguments in this API.
 
-`history_valid` must certify **249 causal 200 Hz samples** ending at that
+`history_valid` must certify a full receptive field of causal 200 Hz samples
+(**249 with the default architecture**) ending at that
 endpoint, including valid held inputs, same episode identity, and valid
 intervening transitions. It is required at the window start and at every
 endpoint. The loader supplies this eligibility without spline reconstruction or
 future held-input interpolation. The physics module cannot reconstruct an input
-history from a two-endpoint tensor; callers must supply this mask honestly.
+history from a two-endpoint tensor; callers must compute this mask from recorded history.
 
 The result contains `short` and `long` dictionaries with dimensional residuals,
 normalized residuals, validity masks, counts, per-channel losses, total losses
@@ -164,16 +178,22 @@ states, unaligned starts/durations and incomplete histories/windows are rejected
 
 ## Validation and reproduction
 
-The read-only validator is `python -m liquid_collection.discrete.analyze`. It
-checks stored chunk hashes and writes a fresh versioned output directory.
-Criteria are saved before evaluating results; `--prepare-only` and
-`--evaluate-prepared` allow the two phases to be explicit. The findings document
-records exact commands, scope, per-environment coverage and error decomposition.
+Run `python -m pytest -q` to check equilibrium, free fall, rotating frames,
+reference shifts, short/long summation, masks, and gradients on synthetic data.
+Use `liquid-tcn evaluate` for a trained model; it reports predicted and target
+conservation residuals alongside supervised errors. [Validation results](validation.md)
+include commands and the scope of recorded-data checks.
+
+The numerical helpers in `liquid_tcn.ported.discrete.analyze` support source
+recording diagnostics and are exercised by the tests. Its legacy campaign CLI
+assumes the upstream experiment/source layout and is not a standalone package
+command. Use `liquid-tcn evaluate` for checkpoint evaluation and
+`tools/compare_port.py` for the optional [source comparison](provenance.md).
 
 All offline arithmetic is float64, using nearby fixed references. This reduces
 new arithmetic error but cannot recover precision already lost in stored
 float32 poses or world-origin angular momentum. Native gravity is independently
-integrated from native interval-start CoM positions, consistent with the inspected
+integrated from native interval-start CoM positions, consistent with the recorded
 kick/couple/drift solver order. Gravity recovered from precomputed balance fields
 is only a diagnostic cross-check. Coupling impulses are never constructed from
 momentum changes to force conservation.

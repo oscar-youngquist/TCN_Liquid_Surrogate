@@ -3,7 +3,7 @@
     "passed": 34,
     "seconds": 9.92,
     "command": "python -m pytest -q",
-    "multiworker_note": "Requires local IPC sockets; executed outside the filesystem/network sandbox."
+    "multiworker_note": "Spawned DataLoader workers require local IPC sockets."
   },
   "source_commit": "300d3288b9bce83ccdc31b38bd7926f9484787e7",
   "source_equivalence": {
@@ -70,21 +70,21 @@
         "robot": "go1",
         "split": "train",
         "payload_id": "f964177b4b37a95160265d9b42555203ba7c72ecb1be7d263d92f1e1e1f7a07d",
-        "path": "/home/oyoungquist/Research/Genesis_Development/HCR_Genesis_PACT_Development/runs/liquid_validation_planes10_4_20261103/go1-dact-representative/round-00000/collection/attempt-0000"
+        "path": "liquid_validation_planes10_4_20261103/go1-dact-representative/round-00000/collection/attempt-0000"
       },
       {
         "group": "planes10_4-viscous",
         "robot": "go1",
         "split": "validation",
         "payload_id": "154ada8735efa743bb4cabd50132f231a4dcae747ea19ed78fb73f4e9bfc4e3f",
-        "path": "/home/oyoungquist/Research/Genesis_Development/HCR_Genesis_PACT_Development/runs/liquid_validation_planes10_4_20261103/go1-dact-viscous/round-00000/collection/attempt-0000"
+        "path": "liquid_validation_planes10_4_20261103/go1-dact-viscous/round-00000/collection/attempt-0000"
       },
       {
         "group": "planes10_4-high_fill",
         "robot": "go1",
         "split": "test",
         "payload_id": "5315ac9c293bb2c0ead0e9b1da667f1c1704cc2e1232d5a56e1a57f2b4706660",
-        "path": "/home/oyoungquist/Research/Genesis_Development/HCR_Genesis_PACT_Development/runs/liquid_validation_planes10_4_20261103/go1-dact-high_fill/round-00000/collection/attempt-0000"
+        "path": "liquid_validation_planes10_4_20261103/go1-dact-high_fill/round-00000/collection/attempt-0000"
       }
     ]
   },
@@ -550,5 +550,6 @@
     "seconds": 10.82,
     "new_tests": 5,
     "automatic_vs_explicit": "identical artifacts, normalization and window counts"
-  }
+  },
+  "recording_path_convention": "Historical source paths are relative to the collector runs directory. Recordings and derived artifacts are not distributed with this package."
 }

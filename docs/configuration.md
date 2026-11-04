@@ -24,7 +24,7 @@ GPU=cpu CONFIG=configs/combined.json bash launch_train.sh --dry-run
 
 ## Model and window geometry
 
-The same `model` object appears in the preparation configuration. Defaults implement PDF section 6. Changes affecting receptive field or horizon require preparing a matching dataset. A model mismatch fails instead of silently using a different architecture.
+The same `model` object appears in the preparation configuration. The [architecture guide](architecture.md) defines the default network. Changes affecting receptive field or horizon require preparing a matching dataset. A model mismatch fails instead of silently using a different architecture.
 
 | Key | Default | Meaning |
 |---|---:|---|
@@ -58,14 +58,14 @@ The 24 physical property values, in order, are density, Genesis kinematic viscos
 
 One epoch visits every eligible training window exactly once using a seeded, O(1)-state affine permutation. This avoids a dataset-sized shuffle allocation; it is not a uniformly random permutation of all possible orderings. Sampler positions in checkpoints count consumed examples, not prefetched examples. The resolved `config.json` and checkpoints record `effective_updates`, including the result of epoch-based sizing.
 
-For a 20-epoch run, set `epochs: 20` and choose `pretrain_updates`/`ramp_updates` appropriate to the number of windows. Setting too short a total budget can leave the run entirely in pretraining; the implementation does not secretly shorten ramps. For a smoke run of an otherwise unchanged experiment, set top-level `max_updates`, not the scheduler budget.
+For a 20-epoch run, set `epochs: 20` and choose `pretrain_updates`/`ramp_updates` appropriate to the number of windows. Setting too short a total budget can leave the run entirely in pretraining; the configured phase and ramp lengths are preserved. For a smoke run of an otherwise unchanged experiment, set top-level `max_updates`, not the scheduler budget.
 
 ## Objectives and precision
 
 | `training` key | Default | Meaning |
 |---|---:|---|
-| `lambda_short` | 1.0 | Final multiplier on the reviewed adjacent-interval discrete loss, after the ramp. |
-| `lambda_long` | 1.0 | Final multiplier on the reviewed whole-window discrete loss, after the ramp. |
+| `lambda_short` | 1.0 | Final multiplier on the adjacent-interval discrete loss, after the ramp. |
+| `lambda_long` | 1.0 | Final multiplier on the whole-window discrete loss, after the ramp. |
 | `supervised` | `"mse"` | `"mse"` or `"huber"`, computed on normalized targets with equal weight per valid scalar across the five heads. |
 | `huber_delta` | 1.0 | Huber transition in normalized target units. Only used for Huber supervision. |
 | `physics_dtype` | `"float64"` | `"float32"` or `"float64"` for de-normalization and discrete calculations outside autocast. |
@@ -73,7 +73,7 @@ For a 20-epoch run, set `epochs: 20` and choose `pretrain_updates`/`ramp_updates
 | `precision_rtol` | 0.005 | Maximum relative loss and global parameter-gradient-norm difference for FP32 versus float64 startup checks. |
 | `amp_rtol` | 0.05 | Corresponding tolerance for optional BF16 versus float64 checks. A failure stops the run. |
 
-The total loss is supervised loss plus ramped short and long losses. Every supervised head remains active in all four ablations. Physics uses physical-unit predictions at both endpoints, recorded base motion/mass/gravity, and the original physical scales and fixed-reference conventions. A valid default window supplies 41 endpoint states and 40 completed-interval wrenches at predicted indices `1:41`; impulse sums are direct. There is no JVP or instantaneous/next-interval reinterpretation. An empty valid set raises during training; it is never a successful zero-loss batch.
+The total loss is supervised loss plus ramped short and long losses. Every supervised head remains active in all four ablations. Physics uses physical-unit predictions at both endpoints, recorded base motion/mass/gravity, and the [physical scales and fixed-reference conventions](liquid_discrete_constraints.md). A valid default window supplies 41 endpoint states and 40 completed-interval wrenches at predicted indices `1:41`; impulse sums are direct. There is no JVP or instantaneous/next-interval reinterpretation. An empty valid set raises during training; it is never a successful zero-loss batch.
 
 ## Loading and execution
 
@@ -139,6 +139,6 @@ Each manual `sources` entry has:
 | `group` | yes | Stable collection family ID shared by related retries and trajectories/robots from that round. Split assignment happens before windowing. |
 | `split` | no | Explicit `"train"`, `"validation"`, or `"test"`; all entries in a group must agree. |
 
-Metadata comes from strict JSON parsing of `job.json`, `resolved.json`, and `liquid.json`, with source schema versions 2 and 3 accepted. Saved Python policy configs are not executed. Actual mass/volume come from solver-recorded metadata and mass is cross-checked with endpoint records. Other source schema versions fail explicitly and need a separately reviewed adapter.
+Metadata comes from strict JSON parsing of `job.json`, `resolved.json`, and `liquid.json`, with source schema versions 2 and 3 accepted. Saved Python policy configs are not executed. Actual mass/volume come from solver-recorded metadata and mass is cross-checked with endpoint records. Other source schema versions fail explicitly and require a schema adapter.
 
 Preparation fails if there are no eligible training windows. Training additionally requires nonempty validation. Failed output directories lack `manifest.json`; use a fresh destination after correcting inputs. Do not put raw recordings, prepared shards, learned checkpoints, or machine-local configs under version control.

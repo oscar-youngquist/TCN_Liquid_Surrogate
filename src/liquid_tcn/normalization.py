@@ -15,6 +15,9 @@ class Moments:
         n = mask.sum(0)
         mean = np.where(mask, values, 0).sum(0) / np.maximum(n, 1)
         m2 = np.where(mask, (values - mean)**2, 0).sum(0)
+        # Merge batch moments with parallel Welford arithmetic. m2 stores the
+        # sum of squared deviations, not variance; the delta^2 correction accounts
+        # for the distance between old and new batch means without retaining rows.
         total = self.count + n
         delta = mean - self.mean
         self.mean += delta * n / np.maximum(total, 1)
@@ -24,6 +27,8 @@ class Moments:
     def result(self):
         if (self.count == 0).any():
             raise ValueError('No training observations for a normalization channel')
+        # Population standard deviation (divide by count, not count-1) defines
+        # the training transform. Validation/test data never update these moments.
         std = np.sqrt(self.m2 / self.count)
         # A constant training channel must not amplify unseen variation by 1e8.
         std = np.where(std < 1e-8, 1., std)

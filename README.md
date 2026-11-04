@@ -2,7 +2,9 @@
 
 Standalone PyTorch pipeline for completed **5 ms liquid-on-robot wrench intervals**. It reads collection attempts directly, prepares mmap shards once, trains all five heads, evaluates supervised and discrete conservation errors, and exports a cached 12-value inference interface. No Genesis, robot policy, QP package, or collection-repository `PYTHONPATH` is required.
 
-The imported baseline is `300d3288b9bce83ccdc31b38bd7926f9484787e7`. [Import provenance](docs/imports.json) records files and hashes. The supplied training PDF defines the architecture; the source's [validated discrete constraints](docs/liquid_discrete_constraints.md) supersede its instantaneous/JVP and trapezoidal-wrench objectives. [Executed checks and limitations](docs/validation.md) describe the acceptance run. Full training has **not** been launched.
+The [architecture guide](docs/architecture.md) defines the network, input channels, output alignment, and inference interface. The [physics reference](docs/liquid_discrete_constraints.md) derives the training losses, and the [recording format](docs/liquid_surrogate_collection.md) describes the input data. These documents contain the specifications used by this package.
+
+The data and physics utilities originate from the HCR Genesis collection project; [source provenance and licensing](docs/provenance.md) identify the imported revision and local adaptations. [Validation results](docs/validation.md) record regression, equivalence, and smoke-test coverage. Recordings and trained weights are not bundled.
 
 See the **[field-by-field configuration reference](docs/configuration.md)** for every JSON value, its default, units, scheduling semantics, and resume behavior.
 
@@ -10,10 +12,10 @@ See the **[field-by-field configuration reference](docs/configuration.md)** for 
 
 | Path | Responsibility |
 |---|---|
-| `src/liquid_tcn/ported/` | Reviewed collection data, discrete losses, storage/audit, transforms and diagnostic helpers; import paths adapted only. |
+| `src/liquid_tcn/ported/` | Collection-format readers, discrete losses, storage/audit, transforms, and diagnostic helpers. |
 | `data.py`, `metadata.py`, `discovery.py`, `preprocess.py` | Causal input retention, recorded property/schema parsing, group splits, bounded preprocessing and provenance. |
 | `dataset.py`, `normalization.py` | Lazy mmap windows, seeded resumable sampling, worker-local caches, training-only statistics. |
-| `model.py`, `objectives.py` | Causal residual TCN, streaming caches, five-head supervision and reviewed discrete objectives. |
+| `model.py`, `objectives.py` | Causal residual TCN, streaming caches, five-head supervision and discrete physics objectives. |
 | `train.py`, `checkpoint.py`, `evaluate.py` | Optimizer phases, progress/TensorBoard, atomic resume, fixed validation and physical metrics. |
 | `cli.py`, `inference.py`, `launch_train.sh` | Commands, frozen export loading, and GPU/config selection. |
 | `configs/` | Complete ablation training JSONs and a source-preparation example. |
@@ -28,7 +30,7 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-Python 3.10+; NumPy, PyTorch, TensorBoard, and tqdm. Install the appropriate PyTorch build for your CPU/CUDA environment. An existing PyTorch environment can also install this package directly. The wheel was independently built and imported outside this repository.
+Python 3.10+; NumPy, PyTorch, TensorBoard, and tqdm. Install the appropriate PyTorch build for your CPU/CUDA environment. An existing PyTorch environment can also install this package directly. See [validation results](docs/validation.md) for packaging checks.
 
 ## Prepare data once
 
@@ -53,7 +55,7 @@ Each preparation is a **fixed snapshot**, not a live dataset: candidate membersh
 
 For manual split assignments or legacy metadata, `configs/prepare.sources.example.json` retains the explicit `sources` workflow. Each entry supplies an attempt `path`, a collection-family `group`, and optionally `split` (`train`, `validation`, or `test`). Do not combine `sources` and `collection_root`. Related retries/robots must share a group; conflicting assignments and duplicate paths are rejected.
 
-Preparation verifies completion, reconciles chunk indices with result manifests, and checks primary and auxiliary checksums. It reads three streams one chunk at a time, deduplicates by native tick and record sequence, and invokes the reviewed episode/interval functions on one 5 ms bin at a time. Old terminal states precede same-time resets; asynchronous resets cannot mix episode histories. Split pieces use a common world moment reference. Native debug recordings are also supported using their stored world impulses, but native-rate data is **not required**.
+Preparation verifies completion, reconciles chunk indices with result manifests, and checks primary and auxiliary checksums. It reads three streams one chunk at a time, deduplicates by native tick and record sequence, and invokes the episode/interval functions on one 5 ms bin at a time. Old terminal states precede same-time resets; asynchronous resets cannot mix episode histories. Split pieces use a common world moment reference. Native debug recordings are also supported using their stored world impulses, but native-rate data is **not required**.
 
 Recorded `z` and held inputs are retained. Missing `z` is reconstructed only from current gravity, base velocity/orientation, and recorded held estimates; missing held values can be recovered from `z`. Neither upcoming acceleration nor instantaneous acceleration reconstruction is used. Unsupported/unselected states, missing grid transitions, incomplete histories, and mass/gravity inconsistencies cannot produce training windows. Episode-wide mass/gravity violations invalidate already indexed windows too.
 
@@ -150,9 +152,9 @@ The output order is `[force, moment, r_B, v_B]`; `S_B` remains training-only in 
 
 Default architecture: 15 motion channels, 32-dimensional property embedding, 64-channel projection, five two-convolution residual blocks with kernel 5/dilations `[1,2,4,8,16]`, SiLU, no dropout or batch/time normalization, and five independent `64→64→3` heads. The receptive field is 249; 289 inputs yield 41 fully contextual endpoint predictions. Physics uses endpoint states at `0:41` and completed-interval wrench predictions at `1:41`, summing all 40 impulses directly.
 
-**Wrench convention:** completed previous 5 ms interval, expressed in its endpoint base frame, moment about the fixed world location of that endpoint base origin. It includes liquid weight. Export does not convert it to an instantaneous or upcoming-interval forecast. There is no HardPACT/closed-loop integration.
+**Wrench convention:** completed previous 5 ms interval, expressed in its endpoint base frame, moment about the fixed world location of that endpoint base origin. It includes liquid weight. Export does not convert it to an instantaneous or upcoming-interval forecast. The package does not include a closed-loop controller.
 
-## Acceptance and profiling tools
+## Tests and profiling tools
 
 ```bash
 python -m pytest -q
@@ -162,4 +164,4 @@ python tools/profile_loader.py --data data/prepared --workers 0 --output artifac
 python tools/check_precision.py --data data/prepared --amp --output artifacts/precision.json
 ```
 
-The reference snapshot is needed only by the comparison tool. `docs/validation.md` records actual scope and results. Source recordings, prepared data, weights, TensorBoard logs, profiler traces, and local configs are ignored by Git; reproducible source/tests/configs and compact validation summaries remain tracked.
+The reference snapshot is needed only by the optional comparison tool; [provenance](docs/provenance.md) describes how to obtain it. The regular test suite uses synthetic fixtures generated in this repository. [Validation results](docs/validation.md) distinguish reproducible tests from historical checks on recordings that are not bundled. Source recordings, prepared data, weights, TensorBoard logs, profiler traces, and local configs are ignored by Git; reproducible source/tests/configs and compact validation summaries remain tracked.
