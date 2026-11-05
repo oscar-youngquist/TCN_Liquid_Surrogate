@@ -68,12 +68,14 @@ For a 20-epoch run, set `epochs: 20` and choose `pretrain_updates`/`ramp_updates
 | `lambda_long` | 1.0 | Final multiplier on the whole-window discrete loss, after the ramp. |
 | `supervised` | `"mse"` | `"mse"` or `"huber"`, computed on normalized targets with equal weight per valid scalar across the five heads. |
 | `huber_delta` | 1.0 | Huber transition in normalized target units. Only used for Huber supervision. |
+| `gradient_strategy` | `"pcgrad"` | Conflict-only one-way projection of the summed physics gradient against supervision. `"sum"` uses ordinary gradient addition. |
+| `pcgrad_eps` | 1e-12 | Positive finite additive epsilon in the projection denominator `||g_supervised||² + eps`. |
 | `physics_dtype` | `"float64"` | `"float32"` or `"float64"` for de-normalization and discrete calculations outside autocast. |
 | `amp` | false | Enable BF16 network autocast after a startup precision gate. Parameters and optimizer state remain FP32. No FP16 mode is provided. |
 | `precision_rtol` | 0.005 | Maximum relative loss and global parameter-gradient-norm difference for FP32 versus float64 startup checks. |
 | `amp_rtol` | 0.05 | Corresponding tolerance for optional BF16 versus float64 checks. A failure stops the run. |
 
-The total loss is supervised loss plus ramped short and long losses. Every supervised head remains active in all four ablations. Physics uses physical-unit predictions at both endpoints, recorded base motion/mass/gravity, and the [physical scales and fixed-reference conventions](liquid_discrete_constraints.md). A valid default window supplies 41 endpoint states and 40 completed-interval wrenches at predicted indices `1:41`; impulse sums are direct. There is no JVP or instantaneous/next-interval reinterpretation. An empty valid set raises during training; it is never a successful zero-loss batch.
+The reported total loss is supervised loss plus ramped short and long losses. With `gradient_strategy="pcgrad"`, the optimizer uses the [projected gradient combination](liquid_discrete_constraints.md#gradient-combination), rather than the derivative of that reported total. The weighted physics terms are summed before projection; they are not projected against one another. Every supervised head remains active in all four ablations. Physics uses physical-unit predictions at both endpoints, recorded base motion/mass/gravity, and the [physical scales and fixed-reference conventions](liquid_discrete_constraints.md). A valid default window supplies 41 endpoint states and 40 completed-interval wrenches at predicted indices `1:41`; impulse sums are direct. There is no JVP or instantaneous/next-interval reinterpretation. An empty valid set raises during training; it is never a successful zero-loss batch.
 
 ## Loading and execution
 
@@ -142,3 +144,27 @@ Each manual `sources` entry has:
 Metadata comes from strict JSON parsing of `job.json`, `resolved.json`, and `liquid.json`, with source schema versions 2 and 3 accepted. Saved Python policy configs are not executed. Actual mass/volume come from solver-recorded metadata and mass is cross-checked with endpoint records. Other source schema versions fail explicitly and require a schema adapter.
 
 Preparation fails if there are no eligible training windows. Training additionally requires nonempty validation. Failed output directories lack `manifest.json`; use a fresh destination after correcting inputs. Do not put raw recordings, prepared shards, learned checkpoints, or machine-local configs under version control.
+
+## Gradient projection logs and resume
+
+`metrics.jsonl` stores the weighted `secondary` loss and a `projection` object.
+TensorBoard exposes these as `train/secondary` and `train/pcgrad/*`:
+
+| Field | Meaning |
+|---|---|
+| `projected` | 1 when the secondary gradient was projected because of conflict; otherwise 0 |
+| `dot_before`, `dot_after` | Inner product of the primary and secondary gradients before/after projection |
+| `cosine_before` | Cosine similarity before projection, with a stabilized denominator |
+| `primary_norm`, `secondary_norm` | Gradient norms before projection on parameters used by both objectives |
+
+Diagnostics are computed before global clipping and AdamW. They are zero when
+there is no active secondary objective or no shared parameters. During supervised
+pretraining, the secondary backward pass is skipped. The precision gate compares
+the actual merged gradients under the selected strategy against float64, using
+the configured final physics weights.
+
+Projection has no persistent optimizer state. Its strategy and epsilon are saved
+with the training configuration, so resume checks enforce the same behavior.
+Checkpoints created before these fields existed are interpreted as `"sum"` with
+`pcgrad_eps=1e-12`; select those values to resume them. Resuming such a checkpoint
+with `"pcgrad"` is rejected rather than silently changing the training rule.

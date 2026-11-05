@@ -131,6 +131,49 @@ outside autocast, in float64 by default. Supervised pretraining sets both physic
 weights to zero; a linear ramp then raises them to the configured values while
 retaining supervision. See [training configuration](configuration.md) for defaults.
 
+## Gradient combination
+
+The default optimizer step uses conflict-only one-way PCGrad. Let
+`g_s = grad(L_supervised)` and
+`g_p = grad(lambda_short L_short + lambda_long L_long)`, where both lambdas include
+the current training ramp. The primary objective includes supervision for force,
+moment, position, velocity, and internal angular momentum. Physics is one
+secondary objective, formed by summing its weighted terms before differentiation.
+
+On the flattened parameters shared by both objectives:
+
+```text
+d = dot(g_s, g_p)
+g_p_projected = g_p - d * g_s / (||g_s||² + eps)   if d < 0
+                g_p                              otherwise
+g_update = g_s + g_p_projected
+```
+
+The primary gradient is not projected. There is no gradient averaging, secondary
+norm balancing, random task ordering, or pairwise projection between physics
+components. Parameters used by only one objective receive that objective's
+gradient unchanged. Parameters unused by both retain `grad=None`, preventing
+optimizer momentum or weight decay from updating them.
+
+The implementation uses the source helper's additive `eps=1e-12`. It keeps the
+zero-primary case well defined, but leaves a small negative dot product after
+projection when `eps` is significant relative to `||g_s||²`. The operation removes
+the conflicting component up to this regularization and floating-point precision.
+It is not a guarantee that supervised loss decreases after a finite AdamW step:
+adaptive scaling, momentum, weight decay, and nonlinear curvature still apply.
+
+The merged gradient is clipped globally before AdamW. Nonfinite objectives,
+component gradients, or merged gradients raise an error. With both physics
+weights zero, training uses only the supervised gradient. `gradient_strategy="sum"`
+provides ordinary summed-loss gradients for comparison. The reported scalar
+`loss` remains `L_supervised + L_secondary` under either strategy; PCGrad changes
+the update direction, not the reported objective values or validation metric.
+
+Implementation: [gradient combination](../src/liquid_tcn/gradients.py) and
+[ported projection](../src/liquid_tcn/ported/pcgrad.py). The helper is extracted
+from `project_aux_against_primary_pcgrad` at the revision listed in
+[provenance](provenance.md). Tests compare it with a verbatim upstream fixture.
+
 ## API and masks
 
 `discrete_constraints(...)` accepts tensors with batch dimension `B`:

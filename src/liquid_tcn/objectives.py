@@ -61,6 +61,8 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
                 raise ValueError(f'Empty valid {horizon} constraints; refusing a zero-loss success')
             if not torch.isfinite(physics[horizon]['loss']):
                 raise FloatingPointError(f'Nonfinite {horizon} physics')
-        total = supervised_loss + lambda_short * physics['short']['loss'] + lambda_long * physics['long']['loss']
-    return dict(loss=total, supervised=supervised_loss, supervised_sums=sums, supervised_counts=counts,
+        # The physics terms form ONE secondary objective for one-way PCGrad.
+        secondary = lambda_short * physics['short']['loss'] + lambda_long * physics['long']['loss']
+        total = supervised_loss + secondary
+    return dict(loss=total, secondary=secondary, supervised=supervised_loss, supervised_sums=sums, supervised_counts=counts,
                 physics=physics, physical=physical)

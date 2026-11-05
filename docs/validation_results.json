@@ -551,5 +551,18 @@
     "new_tests": 5,
     "automatic_vs_explicit": "identical artifacts, normalization and window counts"
   },
-  "recording_path_convention": "Historical source paths are relative to the collector runs directory. Recordings and derived artifacts are not distributed with this package."
+  "recording_path_convention": "Historical source paths are relative to the collector runs directory. Recordings and derived artifacts are not distributed with this package.",
+  "pcgrad_checks": {
+    "full_suite": {
+      "passed": 59,
+      "seconds": 11.35
+    },
+    "subsequent_legacy_resume_test": {
+      "passed": 1,
+      "seconds": 0.71
+    },
+    "source_function_ast_equivalent": true,
+    "recorded_training_performed": false,
+    "historical_smoke_gradient_strategy": "sum"
+  }
 }

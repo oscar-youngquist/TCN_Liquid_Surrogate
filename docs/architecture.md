@@ -3,6 +3,8 @@
 The TCN estimates liquid-on-robot reaction wrenches over completed 5 ms intervals
 and liquid state at each interval endpoint. Inputs and predictions are sampled at
 200 Hz. Training combines recorded labels with discrete Newton–Euler constraints.
+Supervision is the primary objective for [one-way PCGrad](liquid_discrete_constraints.md#gradient-combination);
+the weighted sum of physics losses is the secondary objective.
 The [physics reference](liquid_discrete_constraints.md) defines those constraints;
 [configuration](configuration.md) lists every configurable value.
 

@@ -61,6 +61,15 @@
       "source": "LICENSE",
       "destination": "docs/SOURCE_LICENSE",
       "sha256": "b630e1f180f02908fe927c80a28dd2bba84fa7e71725c263aa103432ca9dd666"
+    },
+    {
+      "source": "rsl_rl/algorithms/encoder_pinn_grad_utils.py",
+      "destination": "src/liquid_tcn/ported/pcgrad.py",
+      "sha256": "cd82cf8bec663ffab0884ef47da4fd6c2b169766f17aec1f1069d6cffadd5489",
+      "symbols": [
+        "project_aux_against_primary_pcgrad"
+      ],
+      "adaptation": "Extracted function verbatim with typing and torch imports; no optimizer or simulator dependencies."
     }
   ],
   "adaptation": "Package imports adapted. Local documentation, comments, docstrings, and diagnostic report text describe this package. Numerical physics and data semantics are preserved. File hashes identify the original source files, not local destinations.",

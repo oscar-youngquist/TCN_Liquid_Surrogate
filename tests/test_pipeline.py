@@ -123,11 +123,11 @@ def test_sampler_acknowledgement():
     assert list(t)==order[17:]
 
 
-@pytest.mark.parametrize('workers', [0, 2])
-def test_checkpoint_exact_resume_and_evaluation(tmp_path, workers):
+@pytest.mark.parametrize('workers,strategy', [(0, 'pcgrad'), (2, 'pcgrad'), (0, 'sum')])
+def test_checkpoint_exact_resume_and_evaluation(tmp_path, workers, strategy):
     path,_=preparation(tmp_path)
     cfg=dict(updates=4,pretrain_updates=1,ramp_updates=2,batch_size=2,threads=2,num_workers=workers,
-             validation_every=2,checkpoint_every=1,validation_batches=1,patience=10)
+             validation_every=2,checkpoint_every=1,validation_batches=1,patience=10,gradient_strategy=strategy)
     train(path,tmp_path/'full',cfg)
     train(path,tmp_path/'resume',cfg,max_updates=2)
     train(path,tmp_path/'resume',cfg,resume=tmp_path/'resume'/'latest.pt')
@@ -141,6 +141,11 @@ def test_checkpoint_exact_resume_and_evaluation(tmp_path, workers):
     events=EventAccumulator(str(tmp_path/'resume'/'tensorboard')).Reload()
     assert [e.step for e in events.Scalars('train/loss')]==[1,2,3,4]
     assert events.Scalars('validation/selection_metric')[-1].step==4
+    assert [e.step for e in events.Scalars('train/pcgrad/projected')]==[1,2,3,4]
+    records=[json.loads(line) for line in (tmp_path/'full'/'metrics.jsonl').read_text().splitlines()]
+    assert records[0]['secondary']==0 and records[0]['projection']['projected']==0
+    assert records[-1]['secondary'] > 0
+    assert a['config']['gradient_strategy']==strategy
 
 
 def test_tiny_batch_overfit(tmp_path):
@@ -264,3 +269,23 @@ def test_epoch_budget_is_derived_from_training_windows(tmp_path):
     assert result['final_update']==expected
     saved=load_checkpoint(tmp_path/'epoch-run'/'latest.pt')
     assert saved['effective_updates']==expected and saved['sampler']['position']==manifest['windows']['train']
+
+
+def test_pre_pcgrad_checkpoint_requires_sum_strategy(tmp_path):
+    path, _ = preparation(tmp_path)
+    cfg = dict(updates=2, pretrain_updates=1, ramp_updates=1, batch_size=2,
+               threads=2, validation_every=2, checkpoint_every=1,
+               validation_batches=1, gradient_strategy='sum')
+    output = tmp_path / 'legacy'
+    train(path, output, cfg, max_updates=1)
+    checkpoint = output / 'latest.pt'
+    state = load_checkpoint(checkpoint)
+    del state['config']['gradient_strategy']
+    del state['config']['pcgrad_eps']
+    torch.save(state, checkpoint)
+    with pytest.raises(ValueError, match='identical data provenance and configuration'):
+        train(path, output, dict(cfg, gradient_strategy='pcgrad'), resume=checkpoint)
+    train(path, output, cfg, resume=checkpoint)
+    restored = load_checkpoint(checkpoint)
+    assert restored['update'] == 2
+    assert restored['config']['gradient_strategy'] == 'sum'

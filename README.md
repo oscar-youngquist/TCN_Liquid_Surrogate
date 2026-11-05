@@ -100,6 +100,15 @@ Set `training.epochs` to a positive count for complete dataset passes, or leave 
 
 Default training uses FP32 AdamW, `1e-3` supervised pretraining then `1e-4` fine-tuning, weight decay `1e-4`, cosine decay, gradient clipping at 1, and a linear ramp of both physics weights. Supervision remains active throughout. Physics runs outside autocast in float64 by default. Optional BF16 `amp` is gated by startup loss/gradient comparisons against FP32 and float64. Nonfinite predictions/gradients and empty objective sets fail explicitly. Valid-count-weighted normalized MSE or Huber supervision covers all five heads. Validation always selects checkpoints using a fixed normalized MSE over all five heads, independent of physics ramps or the chosen supervision loss. `patience` counts validation events.
 
+Training uses conflict-only one-way PCGrad by default. Supervised losses from all
+five heads form the primary objective. The secondary objective is
+`lambda_short * L_short + lambda_long * L_long`, with the current ramped weights.
+If the two gradients conflict, only the secondary gradient is projected; aligned
+physics gradients are retained. The merged gradient is clipped before AdamW.
+Set `training.gradient_strategy` to `"sum"` for ordinary summed-loss gradients.
+See [gradient combination](docs/liquid_discrete_constraints.md#gradient-combination)
+for the formula and numerical conventions.
+
 Worker-local mmap caches have a configurable map count; prefetching is only enabled for workers. Spawned workers and sampling are seeded. Sampling uses an O(1)-state affine permutation, visiting every window once per epoch rather than allocating a dataset-sized permutation. Resume saves the **consumed** sampler position, independent of prefetch progress. Pinned transfers are enabled when CUDA is available. For very small cached datasets, zero workers can be faster than multiprocessing.
 
 ## Run logs, TensorBoard, and resume
@@ -119,7 +128,7 @@ precision.json           startup FP32/float64 and optional AMP checks
 profile.json             loader/training time and peak process/device memory
 ```
 
-TensorBoard logs training losses/weights/counts, clipping, learning rate, and per-head validation errors and normalized conservation residuals. Checkpoint writes flush the event writer; resume purges events beyond the restored update and continues the same step numbering.
+TensorBoard logs training losses/weights/counts, PCGrad projection decisions and shared-gradient diagnostics, clipping, learning rate, and per-head validation errors and normalized conservation residuals. Checkpoint writes flush the event writer; resume purges events beyond the restored update and continues the same step numbering.
 
 ```bash
 tensorboard --logdir runs

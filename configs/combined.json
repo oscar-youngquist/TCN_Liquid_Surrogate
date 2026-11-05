@@ -49,6 +49,8 @@
     "device": "cpu",
     "threads": 4,
     "progress": true,
-    "epochs": null
+    "epochs": null,
+    "gradient_strategy": "pcgrad",
+    "pcgrad_eps": 1e-12
   }
 }

@@ -118,3 +118,23 @@ Not exercised: full model convergence, trained ablation comparisons, real Go2 sm
 ## Collection-root discovery tests
 
 After adding automatic discovery for live collection roots, the full regression suite passed **39 tests in 10.82 seconds**. Five new tests cover recursive candidate discovery, pruning saved-source trees, matching retry/robot groups, stable assignments as recordings are added, incomplete auxiliary streams, completion arriving during checksum verification, corrupt completed recordings, empty collections, conflicting input modes, and the root-based CLI. Automatic preparation produced exactly the same shard/index hashes, normalization, and window counts as manual source selection on the matched fixture. Discovery never starts collection or training and leaves unfinished recordings unchanged.
+
+## One-way PCGrad checks
+
+The PCGrad integration passed the full 59-test suite in 11.35 seconds. A subsequent
+legacy-checkpoint compatibility test passed separately (1 test in 0.71 seconds),
+bringing the suite to 60 tests. Checks cover conflict, alignment, orthogonality,
+zero/tiny primary gradients, both float32 and float64, projection of the weighted
+physics sum, global shared-parameter projection, unused parameter ownership,
+nonfinite gradients, and invalid epsilon values. The imported helper and reference
+fixture have identical function syntax trees to the pinned upstream source.
+
+Synthetic training checks exercise PCGrad and ordinary summed gradients, exact
+resume with zero and two workers, TensorBoard projection logs, and the supervised
+to physics transition. A checkpoint without gradient-strategy metadata resumes
+only under the legacy `sum` setting. The startup precision gate compares merged
+update gradients as well as scalar losses.
+
+The recorded-data smoke results earlier in this document used ordinary summed
+gradients before PCGrad was added. They do not measure PCGrad convergence or
+accuracy. No new recorded-data or full training run was performed for this change.

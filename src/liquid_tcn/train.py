@@ -16,6 +16,7 @@ from .model import LiquidTCN, ModelConfig
 from .normalization import Normalization
 from .dataset import WindowDataset, EpochSampler, make_loader, to_device, close_loader
 from .objectives import objective
+from .gradients import backward_objectives
 from .evaluate import evaluate
 from .checkpoint import atomic_save, load_checkpoint, rng_state, restore_rng
 from .ported.storage import atomic_json, digest
@@ -27,7 +28,7 @@ DEFAULTS = dict(seed=1, batch_size=16, num_workers=0, prefetch_factor=2, pin_mem
     physics_dtype='float64', scheduler='cosine', min_lr_ratio=.1,
     validation_every=250, checkpoint_every=250, patience=20, min_delta=0.,
     validation_batches=None, amp=False, amp_rtol=.05, precision_rtol=.005,
-    device='cpu', threads=4, progress=True)
+    device='cpu', threads=4, progress=True, gradient_strategy='pcgrad', pcgrad_eps=1e-12)
 
 
 def weights(config, update):
@@ -54,8 +55,11 @@ def precision_check(model, batch, norm, config):
             with torch.autocast(device_type=x.device.type, dtype=torch.bfloat16, enabled=mode == 'amp'):
                 prediction = candidate(x, p)
             result = objective(prediction if mode == 'float64' else prediction.float(), batch, norm,
-                               lambda_short=1., lambda_long=1., physics_dtype='float64')
-            result['loss'].backward()
+                               lambda_short=config['lambda_short'], lambda_long=config['lambda_long'],
+                               supervised=config['supervised'], huber_delta=config['huber_delta'], physics_dtype='float64')
+            backward_objectives(result['supervised'],
+                result['secondary'] if config['lambda_short'] or config['lambda_long'] else None,
+                candidate.parameters(), config['gradient_strategy'], config['pcgrad_eps'])
             gradient = torch.cat([q.grad.detach().flatten().double() for q in candidate.parameters()])
             if not torch.isfinite(gradient).all():
                 raise FloatingPointError(f'Nonfinite {mode} gradient')
@@ -83,6 +87,10 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     config = dict(DEFAULTS, **(configuration or {}))
     if config['updates'] < 1 or config['validation_every'] < 1 or config['checkpoint_every'] < 1:
         raise ValueError('Positive update/checkpoint/validation counts required')
+    if config['gradient_strategy'] not in ('pcgrad', 'sum'):
+        raise ValueError('gradient_strategy must be pcgrad or sum')
+    if not math.isfinite(config['pcgrad_eps']) or config['pcgrad_eps'] <= 0:
+        raise ValueError('pcgrad_eps must be finite and positive')
     os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     torch.set_num_threads(config['threads'])
     random.seed(config['seed']); np.random.seed(config['seed']); torch.manual_seed(config['seed'])
@@ -126,7 +134,11 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     # Reject changed data/configuration rather than silently changing the run.
     if resume:
         saved = load_checkpoint(resume, device)
-        if saved['data_manifest_sha256'] != provenance or saved['config'] != config:
+        # Checkpoints predating PCGrad used ordinary summed gradients.
+        saved_config = dict(saved['config'])
+        saved_config.setdefault('gradient_strategy', 'sum')
+        saved_config.setdefault('pcgrad_eps', 1e-12)
+        if saved['data_manifest_sha256'] != provenance or saved_config != config:
             raise ValueError('Resume requires identical data provenance and configuration')
         model.load_state_dict(saved['model']); optimizer.load_state_dict(saved['optimizer'])
         scheduler.load_state_dict(saved['scheduler']); sampler.load_state_dict(saved['sampler'])
@@ -184,10 +196,11 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                 short, long = weights(config, update)
                 result = objective(pred.float(), batch, norm, short, long, config['supervised'],
                                    config['huber_delta'], config['physics_dtype'])
-                # Backpropagate the combined supervised + short + long objective once.
-                # Clip the global parameter-gradient norm before AdamW; the returned norm
-                # is pre-clipping. Nonfinite gradients raise instead of corrupting weights.
-                result['loss'].backward()
+                # Keep supervision primary; project the SUM of weighted physics
+                # gradients only on conflict. Clip the merged gradient before AdamW.
+                projection = backward_objectives(result['supervised'],
+                    result['secondary'] if short or long else None, model.parameters(),
+                    config['gradient_strategy'], config['pcgrad_eps'])
                 grad = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip'], error_if_nonfinite=True)
                 used_lr = optimizer.param_groups[0]['lr']
                 optimizer.step(); scheduler.step()
@@ -203,7 +216,8 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     short=float(result['physics']['short']['loss'].detach()), long=float(result['physics']['long']['loss'].detach()),
                     short_count=int(result['physics']['short']['count']), long_count=int(result['physics']['long']['count']),
                     supervised_counts=result['supervised_counts'].tolist(), lambda_short=short, lambda_long=long,
-                    gradient_norm=float(grad), learning_rate=used_lr)
+                    gradient_norm=float(grad), learning_rate=used_lr,
+                    secondary=float(result['secondary'].detach()), projection=projection)
                 if update % config['validation_every'] == 0 or update == total_updates:
                     vstart = time.perf_counter()
                     last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'])
@@ -232,6 +246,9 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                 for key in ('loss', 'supervised', 'short', 'long', 'lambda_short', 'lambda_long',
                             'gradient_norm', 'learning_rate', 'short_count', 'long_count'):
                     writer.add_scalar('train/' + key, record[key], update)
+                writer.add_scalar('train/secondary', record['secondary'], update)
+                for key, value in projection.items():
+                    writer.add_scalar('train/pcgrad/' + key, value, update)
                 for head, count in zip(('force', 'moment', 'r_B', 'v_B', 'S_B'), record['supervised_counts']):
                     writer.add_scalar('train/valid_' + head, count, update)
                 writer.add_scalar('train/gradient_clipped', int(grad > config['gradient_clip']), update)

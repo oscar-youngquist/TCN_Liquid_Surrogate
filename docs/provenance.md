@@ -41,3 +41,18 @@ python tools/compare_port.py --source /tmp/liquid-source-snapshot \
 Use fresh temporary paths. Add `--attempt /path/to/completed/attempt` to compare
 merged rows, episodes, intervals, and window eligibility on a recording. Recorded
 data are not bundled; the tool's synthetic physics comparison needs no recording.
+
+## Conflict-only PCGrad
+
+`src/liquid_tcn/ported/pcgrad.py` contains the verbatim
+`project_aux_against_primary_pcgrad` function from
+`rsl_rl/algorithms/encoder_pinn_grad_utils.py` at the same pinned commit above.
+`imports.json` records the full source file hash and extracted symbol.
+`tests/fixtures/pcgrad_reference.py` preserves an independent upstream fixture for
+numerical equivalence checks. The always-orthogonal optimizer variants from the
+source repository are not used.
+
+`src/liquid_tcn/gradients.py` supplies the package integration: compute supervised
+and summed physics gradients, project on shared parameters, preserve unused
+parameter ownership, and return logging diagnostics. Projection has no external
+optimizer, simulator, or policy dependency.
