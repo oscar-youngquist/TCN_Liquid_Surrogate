@@ -8,12 +8,13 @@ import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data._utils.collate import default_collate
 from .preprocess import INDEX_DTYPE, SCHEMA_VERSION
 from .ported.storage import digest
 
 
 class WindowDataset(Dataset):
-    def __init__(self, path, split='train', cache_size=8, verify=False):
+    def __init__(self, path, split='train', cache_size=8, verify=False, verification_receipt=None):
         self.path = Path(path)
         self.manifest = json.loads((self.path / 'manifest.json').read_text())
         if self.manifest['schema_version'] != SCHEMA_VERSION:
@@ -23,13 +24,17 @@ class WindowDataset(Dataset):
         self.index = None
         self.cache = OrderedDict()
         self.pid = None
+        self.metadata_cache = OrderedDict()
         self.series = {s['id']: s for s in self.manifest['series']}
         c = self.manifest['model']
         self.rf = 1 + 2 * (c['kernel_size'] - 1) * sum(c['dilations'])
         self.input_length = self.rf + c['long_intervals']
         if (self.path / f'{split}.idx').stat().st_size != self.length * INDEX_DTYPE.itemsize:
             raise ValueError('Truncated window index')
-        if verify:
+        if verification_receipt is not None:
+            from .integrity import check_receipt
+            check_receipt(self.path, verification_receipt)
+        elif verify:
             for name, expected in self.manifest['artifacts'].items():
                 if digest(self.path / name) != expected:
                     raise ValueError(f'Prepared artifact checksum mismatch: {name}')
@@ -41,12 +46,13 @@ class WindowDataset(Dataset):
         state = self.__dict__.copy()
         # Spawned workers reopen their own mappings instead of pickling live
         # mmap/cache state. _local also guards against inherited state after fork.
-        state.update(index=None, cache=OrderedDict(), pid=None)
+        state.update(index=None, cache=OrderedDict(), metadata_cache=OrderedDict(), pid=None)
         return state
 
     def _local(self):
         if self.pid != os.getpid():
             self.cache = OrderedDict()
+            self.metadata_cache = OrderedDict()
             self.index = np.memmap(self.path / f'{self.split}.idx', dtype=INDEX_DTYPE, mode='r') if self.length else None
             self.pid = os.getpid()
 
@@ -62,38 +68,88 @@ class WindowDataset(Dataset):
                 self.cache.popitem(last=False)
         return self.cache[key]
 
+    def _metadata(self, sid):
+        if sid not in self.metadata_cache:
+            details = self.series[sid]
+            self.metadata_cache[sid] = (np.asarray(details['properties'], dtype=np.float32),
+                                        np.asarray(details['interior_dimensions'], dtype=np.float64))
+            if len(self.metadata_cache) > self.cache_size * 16:
+                self.metadata_cache.popitem(last=False)
+        self.metadata_cache.move_to_end(sid)
+        return self.metadata_cache[sid]
+
     def __getitem__(self, index):
-        if not 0 <= index < self.length:
-            raise IndexError(index)
+        batch = self.__getitems__([index]).batch
+        return {k: int(v[0]) if k in ('series', 'end') else v[0] for k, v in batch.items()}
+
+    def __getitems__(self, indices):
+        """Gather a batch by shard, then restore sampler order without window copies.
+
+        Only motion needs the full causal history. Labels and recorded physics
+        constituents need the contextual endpoints. Allocate each field once per
+        batch; no structured-window concatenation or per-sample tensor conversion.
+        """
         self._local()
-        entry = self.index[index]
-        # A compact index stores just series ID and inclusive final row. Overlap
-        # is represented by shared shard rows, not duplicated full training windows.
-        sid, end = int(entry['series']), int(entry['end'])
-        begin = end - self.input_length + 1
-        shard_rows = self.manifest['shard_rows']
-        pieces = []
-        pos = begin
-        while pos <= end:
-            shard, offset = divmod(pos, shard_rows)
-            take = min(end - pos + 1, shard_rows - offset)
-            pieces.append(np.array(self._shard(sid, shard)[offset:offset + take], copy=True))
-            pos += take
-        rows = np.concatenate(pieces)
-        # Copy only this window (possibly across shard boundaries). Keep all
-        # 289 motion inputs but only the final 41 labels/recorded physics states:
-        # these align exactly with the model's RF-1 contextual-output trim.
-        endpoints = rows[self.rf - 1:]
-        details = self.series[sid]
-        # Preserve metadata at float64; network inputs alone are converted to FP32.
-        out = {k: torch.from_numpy(np.array(endpoints[k], copy=True)) for k in endpoints.dtype.names
-               if k not in ('motion', 'held_acceleration_W')}
-        out['motion'] = torch.from_numpy(rows['motion'].astype(np.float32))
-        out['properties'] = torch.tensor(details['properties'], dtype=torch.float32)
-        out['interior_dimensions'] = torch.tensor(details['interior_dimensions'], dtype=torch.float64)
-        out['series'] = sid
-        out['end'] = end
-        return out
+        if not indices or any(i < 0 or i >= self.length for i in indices):
+            raise IndexError(indices)
+        entries = self.index[indices]
+        count, endpoints = len(indices), self.input_length - self.rf + 1
+        sid = int(entries[0]['series'])
+        dtype = self._shard(sid, int(entries[0]['end']) // self.manifest['shard_rows']).dtype
+        arrays = {}
+        for key in dtype.names:
+            if key in ('motion', 'held_acceleration_W'):
+                continue
+            field = dtype.fields[key][0]
+            arrays[key] = np.empty((count, endpoints) + field.shape, dtype=field.base)
+        arrays['motion'] = np.empty((count, self.input_length, 15), dtype=np.float32)
+        arrays['properties'] = np.stack([self._metadata(int(e['series']))[0] for e in entries])
+        arrays['interior_dimensions'] = np.stack([self._metadata(int(e['series']))[1] for e in entries])
+        arrays['series'] = entries['series'].astype(np.int64)
+        arrays['end'] = entries['end'].astype(np.int64)
+        reads = {}
+        for i, entry in enumerate(entries):
+            sid, end = int(entry['series']), int(entry['end'])
+            begin = end - self.input_length + 1
+            pos = begin
+            while pos <= end:
+                shard, offset = divmod(pos, self.manifest['shard_rows'])
+                take = min(end-pos+1, self.manifest['shard_rows']-offset)
+                reads.setdefault((sid, shard), []).append((i, offset, take, pos-begin))
+                pos += take
+        for (sid, shard), segments in reads.items():
+            rows = self._shard(sid, shard)
+            for i, offset, take, destination in segments:
+                arrays['motion'][i, destination:destination+take] = rows['motion'][offset:offset+take]
+                skip = max(0, self.rf-1-destination)
+                if skip < take:
+                    dest = destination+skip-(self.rf-1)
+                    for key in dtype.names:
+                        if key not in ('motion', 'held_acceleration_W'):
+                            arrays[key][i, dest:dest+take-skip] = rows[key][offset+skip:offset+take]
+        return FetchedBatch({k: torch.from_numpy(v) for k, v in arrays.items()})
+
+
+class FetchedBatch(list):
+    """Default DataLoader collation still works; our loader avoids its extra stack."""
+    def __init__(self, batch):
+        self.batch = batch
+        # Our collator consumes .batch directly. Construct sample views only
+        # for callers using PyTorch's default collator or direct list iteration.
+        super().__init__()
+
+    def __len__(self):
+        return len(self.batch['motion'])
+
+    def __getitem__(self, index):
+        return {k: v[index] for k, v in self.batch.items()}
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+
+def collate_windows(samples):
+    return samples.batch if isinstance(samples, FetchedBatch) else default_collate(samples)
 
 
 class EpochSampler(Sampler):
@@ -151,7 +207,7 @@ def seed_worker(worker_id):
 
 def make_loader(dataset, batch_size=16, num_workers=0, prefetch_factor=2,
                 pin_memory=True, seed=1, sampler=None):
-    options = dict(batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory and torch.cuda.is_available(),
+    options = dict(collate_fn=collate_windows, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory and torch.cuda.is_available(),
                    worker_init_fn=seed_worker, generator=torch.Generator().manual_seed(seed), sampler=sampler)
     # PyTorch forbids worker prefetch/persistence options with zero workers.
     # A dedicated generator seeds workers without consuming model RNG state.

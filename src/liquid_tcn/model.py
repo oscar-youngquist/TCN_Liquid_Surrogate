@@ -74,7 +74,8 @@ class LiquidTCN(nn.Module):
         self.projection = nn.Conv1d(15 + c.embedding_dim, c.channels, 1)
         self.blocks = nn.ModuleList([Block(c.channels, c.kernel_size, d) for d in c.dilations])
         self.heads = nn.ModuleList([nn.Sequential(nn.Linear(c.channels, c.channels), nn.SiLU(),
-                                                nn.Linear(c.channels, 3)) for _ in HEADS])
+                                                  nn.Linear(c.channels, c.channels), nn.SiLU(),
+                                                  nn.Linear(c.channels, 3)) for _ in HEADS])
 
     def forward(self, motion, properties, contextual_only=True):
         # motion is [B,T,15]; static recorded properties are [B,24]. Broadcasting

@@ -262,7 +262,7 @@ def test_real_tiny_cpu_worker_end_to_end(tmp_path):
 
 
 def test_main_runs_phases_in_order_and_rejects_reuse(tmp_path, monkeypatch):
-    data = tmp_path/'data'; data.mkdir(); atomic_json(data/'manifest.json', {})
+    data = tmp_path/'data'; data.mkdir(); atomic_json(data/'manifest.json', {'artifacts': {}})
     calls = []
     def fake(self):
         calls.append(self.folder.name)
@@ -291,7 +291,7 @@ def test_main_runs_phases_in_order_and_rejects_reuse(tmp_path, monkeypatch):
 
 
 def test_main_failure_never_starts_second_phase(tmp_path, monkeypatch):
-    data = tmp_path/'data'; data.mkdir(); atomic_json(data/'manifest.json', {})
+    data = tmp_path/'data'; data.mkdir(); atomic_json(data/'manifest.json', {'artifacts': {}})
     calls = []
     def fail(self):
         calls.append(self.folder.name)

@@ -1,5 +1,9 @@
 # Two-stage hyperparameter sweep
 
+For dependent search, matched-seed ablations and a persistent 48-hour deadline,
+use the separate [staged sweep](staged_sweeps.md). This guide describes the original
+fixed 16-trial workflow, whose configurations and promotion rules are unchanged.
+
 The sweep screens 16 independent configurations, then continues the baseline and
 the three best alternatives. It uses the prepared training and validation splits;
 the test split is never used to rank or promote trials. The coordinator starts

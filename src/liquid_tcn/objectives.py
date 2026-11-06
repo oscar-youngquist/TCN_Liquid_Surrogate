@@ -77,14 +77,17 @@ def loss_components(result, lambda_short, lambda_long):
     """
     from .model import HEADS
 
-    sums = result['supervised_sums'].detach().cpu().tolist()
-    counts = result['supervised_counts'].detach().cpu().tolist()
+    packed = torch.cat([result['supervised_sums'].detach().to(torch.float64),
+                        result['supervised_counts'].detach().to(torch.float64),
+                        result['physics']['short']['loss_by_channel'].detach().to(torch.float64),
+                        result['physics']['long']['loss_by_channel'].detach().to(torch.float64)]).cpu().tolist()
+    sums, counts = packed[:5], packed[5:10]
     components = {}
     for head, total, count in zip(HEADS, sums, counts):
         components[f'supervised/{head}'] = total / (3 * count)
         components[f'supervised_contribution/{head}'] = total / (3 * sum(counts))
     for horizon, weight in (('short', lambda_short), ('long', lambda_long)):
-        values = result['physics'][horizon]['loss_by_channel'].detach().cpu().tolist()
+        values = packed[10:13] if horizon == 'short' else packed[13:16]
         for channel, value in zip(('r', 'P', 'H'), values):
             components[f'{horizon}/{channel}'] = value
             components[f'{horizon}_weighted/{channel}'] = weight * value

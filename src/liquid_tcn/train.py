@@ -14,7 +14,7 @@ import time
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from .batch_logging import BatchLogger, resolve_mode
+from .batch_logging import BatchLogger, resolve_mode, MetricWriter, write_scalars
 from .progress import TrainingProgress
 from .model import LiquidTCN, ModelConfig
 from .normalization import Normalization
@@ -85,7 +85,7 @@ def precision_check(model, batch, norm, config):
 
 def train(data, output, configuration=None, resume=None, max_updates=None,
           expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone',
-          runtime_hooks=None):
+          runtime_hooks=None, verification_receipt=None):
     """Logging is a runtime option, deliberately outside checkpoint configuration.
 
     Optional runtime_hooks observe ready/update/checkpoint boundaries; they are
@@ -117,7 +117,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         log.emit('startup', output=str(output), resume=str(resume) if resume else None,
                  scheduler_horizon=config['updates'])
         return _train(data, output, configuration, resume, max_updates, expected_model,
-                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks)
+                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt)
     except BaseException as error:
         log.emit('failure', error_type=type(error).__name__, error=str(error))
         raise
@@ -129,7 +129,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
 
 
 def _train(data, output, configuration, resume, max_updates, expected_model,
-           launch_config, logging_mode, log, stop_requested, received, runtime_hooks):
+           launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt):
     mode = resolve_mode(logging_mode, (configuration or {}).get('progress', True))
     unknown = set(configuration or {}) - set(DEFAULTS)
     if unknown:
@@ -156,7 +156,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ('latest.pt', 'config.json')) and resume is None:
         raise ValueError('Run exists; supply --resume or use a fresh output')
-    training = WindowDataset(data, 'train', config['cache_size'], verify=True)
+    training = WindowDataset(data, 'train', config['cache_size'], verify=True, verification_receipt=verification_receipt)
     validation = WindowDataset(data, 'validation', config['cache_size'])
     if not len(training) or not len(validation):
         raise ValueError('Training and validation must both have eligible windows in separate collection groups')
@@ -214,7 +214,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     checks = precision_check(model, probe, norm, config)
     atomic_json(output / 'precision.json', checks)
     stop = min(total_updates, max_updates) if max_updates is not None else total_updates
-    timing = dict(loader_seconds=0., training_seconds=0., validation_seconds=0., samples=0, updates=0, clipped=0)
+    timing = dict(loader_seconds=0., training_seconds=0., validation_seconds=0., transfer_seconds=0., logging_seconds=0., checkpoint_seconds=0., samples=0, updates=0, clipped=0)
     start = time.perf_counter()
     last_validation = saved.get('validation') if resume else None
     log.initial = update
@@ -236,6 +236,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 if entry['update'] <= update:
                     target.write(line)
         os.replace(output/'metrics.jsonl.tmp', output/'metrics.jsonl')
+    metrics = MetricWriter(output/'metrics.jsonl')
     writer = SummaryWriter(log_dir=str(output / 'tensorboard'), purge_step=update + 1 if resume else None)
     writer.add_text('run/configuration', json.dumps(config, indent=2), update)
 
@@ -243,7 +244,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     # is flushed alongside model/optimizer state; purge_step above hides stale
     # log events beyond the restored checkpoint when resuming an interrupted run.
     def save(name):
-        checkpoint_start = time.monotonic() if runtime_hooks is not None else None
+        checkpoint_start = time.monotonic()
+        metrics.flush()
         writer.flush()
         atomic_save(output/name, dict(format_version=1, model=model.state_dict(), model_config=asdict(model.config),
             optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict(),
@@ -252,6 +254,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
             normalization=norm.stats, config=config, data_manifest_sha256=provenance,
             data_provenance=dict(sources=training.manifest['sources'], windows=training.manifest['windows'],
                                  preparation_config=training.manifest['config']), validation=last_validation))
+        timing['checkpoint_seconds'] += time.monotonic()-checkpoint_start
         log.emit('checkpoint', update=update, checkpoint=str(output/name))
         if runtime_hooks is not None:
             runtime_hooks.checkpoint(update, name, time.monotonic()-checkpoint_start)
@@ -272,6 +275,10 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 timing['loader_seconds'] += time.perf_counter()-tick
                 train_start = time.perf_counter()
                 batch = to_device(batch, device)
+                if device.type == 'cuda' and runtime_hooks is not None:
+                    torch.cuda.synchronize(device)
+                timing['transfer_seconds'] += time.perf_counter()-train_start
+                train_start = time.perf_counter()
                 # Validation switches to eval mode, so restore training mode each step.
                 # Clear previous gradients; each backward here represents one batch update.
                 model.train(); optimizer.zero_grad(set_to_none=True)
@@ -295,20 +302,25 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 # Acknowledge only optimizer-consumed samples. DataLoader may prefetch
                 # future indices; saving its iterator progress would skip data on resume.
                 sampler.advance(len(batch['motion'])); update += 1
-                if device.type == 'cuda':
+                if device.type == 'cuda' and runtime_hooks is not None:
                     torch.cuda.synchronize(device)
                 compute_seconds = time.perf_counter()-train_start
                 timing['training_seconds'] += compute_seconds
                 timing['samples'] += len(batch['motion']); timing['updates'] += 1
-                timing['clipped'] += int(grad > config['gradient_clip'])
-                record = dict(update=update, loss=float(result['loss'].detach()), supervised=float(result['supervised'].detach()),
-                    short=float(result['physics']['short']['loss'].detach()), long=float(result['physics']['long']['loss'].detach()),
-                    short_count=int(result['physics']['short']['count']), long_count=int(result['physics']['long']['count']),
+                logging_start = time.perf_counter()
+                scalars = torch.stack([result['loss'].detach().double(), result['supervised'].detach().double(),
+                    result['physics']['short']['loss'].detach().double(), result['physics']['long']['loss'].detach().double(),
+                    result['physics']['short']['count'].detach().double(), result['physics']['long']['count'].detach().double(),
+                    grad.detach().double(), result['secondary'].detach().double()]).cpu().tolist()
+                record = dict(update=update, loss=scalars[0], supervised=scalars[1], short=scalars[2], long=scalars[3],
+                    short_count=int(scalars[4]), long_count=int(scalars[5]),
                     supervised_counts=result['supervised_counts'].tolist(), lambda_short=short, lambda_long=long,
-                    gradient_norm=float(grad), learning_rate=used_lr,
-                    secondary=float(result['secondary'].detach()), projection=projection,
+                    gradient_norm=scalars[6], learning_rate=used_lr, secondary=scalars[7], projection=projection,
                     loss_components=loss_components(result, short, long))
+                clipped = int(record['gradient_norm'] > config['gradient_clip'])
+                timing['clipped'] += clipped
                 log.state.update({key: record[key] for key in log.state if key in record})
+                timing['logging_seconds'] += time.perf_counter()-logging_start
                 if not defer_maintenance and (update % config['validation_every'] == 0 or update == total_updates):
                     log.emit('validation_start', update=update)
                     vstart = time.perf_counter()
@@ -346,19 +358,21 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     for horizon, values in last_validation['conservation'].items():
                         for channel, value in zip(('r', 'P', 'H'), values['normalized_rms_vector']):
                             writer.add_scalar(f'validation/{horizon}/normalized_rms_{channel}', value, update)
+                logging_start = time.perf_counter()
+                scalar_tags = {}
                 for key in ('loss', 'supervised', 'short', 'long', 'lambda_short', 'lambda_long',
                             'gradient_norm', 'learning_rate', 'short_count', 'long_count'):
-                    writer.add_scalar('train/' + key, record[key], update)
-                writer.add_scalar('train/secondary', record['secondary'], update)
+                    scalar_tags['train/' + key] = record[key]
+                scalar_tags['train/secondary'] = record['secondary']
                 for key, value in record['loss_components'].items():
-                    writer.add_scalar('train/' + key, value, update)
+                    scalar_tags['train/' + key] = value
                 for key, value in projection.items():
-                    writer.add_scalar('train/pcgrad/' + key, value, update)
+                    scalar_tags['train/pcgrad/' + key] = value
                 for head, count in zip(('force', 'moment', 'r_B', 'v_B', 'S_B'), record['supervised_counts']):
-                    writer.add_scalar('train/valid_' + head, count, update)
-                writer.add_scalar('train/gradient_clipped', int(grad > config['gradient_clip']), update)
-                with open(output/'metrics.jsonl', 'a') as stream:
-                    stream.write(json.dumps(record, allow_nan=False)+'\n')
+                    scalar_tags['train/valid_' + head] = count
+                scalar_tags['train/gradient_clipped'] = clipped
+                write_scalars(writer, scalar_tags, update)
+                metrics.write(record)
                 progress.update(1)
                 progress.set_postfix(phase='supervised' if short == long == 0 else 'physics',
                     loss=f"{record['loss']:.4g}", sup=f"{record['supervised']:.4g}",
@@ -367,10 +381,17 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     val='pending' if last_validation is None else f"{last_validation['selection_metric']:.4g}", refresh=False)
                 if update % 250 == 0:
                     log.emit('updates', update=update)
+                timing['logging_seconds'] += time.perf_counter()-logging_start
                 if runtime_hooks is not None:
+                    if hasattr(runtime_hooks, 'costs'):
+                        runtime_hooks.costs(timing)
                     # End-to-end timing includes data loading and ordinary logging.
                     # Benchmark barriers run here, before any checkpoint I/O.
-                    runtime_hooks.update_end(update, compute_seconds, writer)
+                    class FlushLogs:
+                        def flush(self):
+                            writer.flush()
+                            metrics.flush()
+                    runtime_hooks.update_end(update, compute_seconds, FlushLogs())
                 if not defer_maintenance and update % config['checkpoint_every'] == 0:
                     save('latest.pt')
                 if update >= stop or stale >= config['patience'] or stop_requested.is_set():
@@ -380,9 +401,10 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     finally:
         progress.close()
         writer.close()
+        metrics.close()
         close_loader(loader)
         close_loader(val_loader)
-    timing.update(wall_seconds=time.perf_counter()-start,
+    timing.update(timing_definition='Host sections; CUDA synchronized only with benchmark hooks. Ordinary transfer/training timings include asynchronous dispatch; logging includes scalar waits.', wall_seconds=time.perf_counter()-start,
         samples_per_training_second=timing['samples']/max(timing['training_seconds'], 1e-12),
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         peak_device_bytes=torch.cuda.max_memory_allocated(device) if device.type=='cuda' else 0,

@@ -245,6 +245,15 @@ The reference snapshot is needed only by the optional comparison tool; [provenan
 
 ## Hyperparameter sweeps
 
+The [staged sweep](docs/staged_sweeps.md) searches loss, learning rate,
+physics activation and weights, then runs four matched-seed ablations and freezes
+all twelve checkpoint selections before test evaluation. Use
+`scripts/launch_staged_sweep_unity.sh` inside an existing allocation. It supports
+up to twelve independent processes, measures actual concurrent throughput, checks
+CPU/RAM/GPU capacity, and preserves its original deadline on resume. Add `--dry-run`
+to inspect the initial configurations and dependent stage plan without training.
+
+
 The [two-stage sweep guide](docs/sweeps.md) documents the 16 trials based on
 reviewed commit `5c7792d`, their immutable configs, screening/promotion rules,
 checkpoint recovery, and exact Bash commands for an existing Unity allocation.

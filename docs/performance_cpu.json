@@ -1,0 +1,73 @@
+{
+  "baseline": "25f8382",
+  "loader": {
+    "after": {
+      "seconds": [
+        0.033812751004006714,
+        0.033663807989796624,
+        0.03353523201076314,
+        0.03353033700841479
+      ],
+      "windows": 724,
+      "windows_per_second": 21592.386614494946
+    },
+    "before": {
+      "seconds": [
+        0.08223015099065378,
+        0.07988332700915635,
+        0.07984608999686316,
+        0.08029943899600767
+      ],
+      "windows": 724,
+      "windows_per_second": 9067.444630393838
+    }
+  },
+  "model_optimizer_sampler_scheduler_equal": true,
+  "note": "CPU synthetic fixtures; loader fastest of four cache-warm passes; sequential same-process RSS is cumulative; training wall excludes initialization/precision checks",
+  "runtime": {
+    "cuda": "13.2",
+    "numpy": "2.4.6",
+    "python": "3.11.18 (main, Oct 26 2026, 18:19:35) [GCC 14.3.0]",
+    "torch": "2.15.0+cu132"
+  },
+  "training": {
+    "after": {
+      "checkpoint_seconds": 0.011883994011441246,
+      "clipped": 42,
+      "clipped_fraction": 0.7,
+      "final_update": 60,
+      "interrupted": false,
+      "loader_seconds": 0.10195808805292472,
+      "logging_seconds": 0.010201667086221278,
+      "peak_device_bytes": 0,
+      "peak_rss_kib": 750684,
+      "samples": 456,
+      "samples_per_training_second": 1383.4444083398787,
+      "signal": null,
+      "stopped_early": false,
+      "timing_definition": "Host sections; CUDA synchronized only with benchmark hooks. Ordinary transfer/training timings include asynchronous dispatch; logging includes scalar waits.",
+      "training_seconds": 0.32961208795313723,
+      "transfer_seconds": 0.0006795551162213087,
+      "updates": 60,
+      "validation_seconds": 0.026174477010499686,
+      "wall_seconds": 0.48463232698850334
+    },
+    "before": {
+      "clipped": 42,
+      "clipped_fraction": 0.7,
+      "final_update": 60,
+      "interrupted": false,
+      "loader_seconds": 0.14601744787069038,
+      "peak_device_bytes": 0,
+      "peak_rss_kib": 750172,
+      "samples": 456,
+      "samples_per_training_second": 1417.9664036058027,
+      "signal": null,
+      "stopped_early": false,
+      "training_seconds": 0.3215873090084642,
+      "updates": 60,
+      "validation_seconds": 0.033676079008728266,
+      "wall_seconds": 0.5754806309996638
+    }
+  }
+}

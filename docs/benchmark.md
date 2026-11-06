@@ -121,7 +121,7 @@ serialization, and validation are outside these intervals.
 Per-worker throughput is measured updates divided by that worker's measured
 seconds. Median and p95 latency use the individual update intervals, not an
 estimate from the progress logger. The secondary `compute_section_seconds`
-measurement covers the trainer's host-timed transfer/forward/backward/optimizer/
+measurement covers the trainer's host-timed forward/backward/optimizer/
 scheduler/CUDA-sync section; it excludes loading and per-update metric logging.
 It is **not** a pure GPU-kernel timing measurement.
 
@@ -249,3 +249,12 @@ runs, including 14 benchmark tests. The main CPU run passed 99 tests; two existi
 multiworker DataLoader cases passed separately outside the sandbox, where worker
 communication is available. Both Bash launchers passed syntax checks. No production
 GPU benchmark or scheduler job was launched.
+
+
+The [staged sweep](staged_sweeps.md) reuses this benchmark's worker and barriers to
+measure its actual resource-limited cohort (up to twelve processes). The standalone
+single-versus-four command remains unchanged. Coordinated benchmark workers now
+share a verified-data receipt; `training.section_costs` separates measured loader,
+transfer, training and logging time. JSONL and TensorBoard are both flushed at the
+warmup and final measured boundaries. Per-worker `profile` includes whole-run
+validation/checkpoint costs and `peak_rss_kib` supports host-memory capacity checks.

@@ -1,0 +1,50 @@
+{
+  "dependent_generation": "Only stage 1 resolved until predecessor completes",
+  "ranking": "full-validation normalized supervised MSE, then stable trial ID",
+  "refinement_rule": "geometric midpoint to nearest tested LR; geometric midpoint to runner-up weights; stable Cartesian dedup substitution",
+  "schedule_horizon": 20000,
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "stages": [
+    {
+      "absolute_updates": 3000,
+      "candidates": 5,
+      "name": "Supervised loss",
+      "stage": "1"
+    },
+    {
+      "absolute_updates": 5000,
+      "candidates": 3,
+      "name": "Physics learning rate",
+      "stage": "2"
+    },
+    {
+      "absolute_updates": 6000,
+      "candidates": 3,
+      "name": "Physics activation",
+      "stage": "3"
+    },
+    {
+      "absolute_updates": 8000,
+      "candidates": 4,
+      "name": "Physics weights",
+      "stage": "4"
+    },
+    {
+      "absolute_updates": 10000,
+      "candidates": 8,
+      "name": "Joint refinement",
+      "stage": "5"
+    },
+    {
+      "absolute_updates": 20000,
+      "candidates": 12,
+      "name": "Matched-seed confirmation and ablations",
+      "stage": "6"
+    }
+  ],
+  "test_gate": "all 12 final best checkpoints frozen"
+}

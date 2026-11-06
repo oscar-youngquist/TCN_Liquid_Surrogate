@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import resource
 import socket
 import subprocess
 import sys
@@ -168,18 +169,28 @@ class MeasurementHooks:
                 if self.wait_safely('measured_done'):
                     reset_peaks(self.device)
 
+    def costs(self, timing):
+        keys = ('loader_seconds', 'transfer_seconds', 'training_seconds', 'logging_seconds')
+        current = {k: timing[k] for k in keys}
+        if not hasattr(self, 'cost_baseline'):
+            self.cost_baseline = current
+        self.section_costs = {k: current[k]-self.cost_baseline[k] for k in keys}
+        # The callback precedes update_end, so warmup totals are captured exactly.
+        if timing['updates'] == self.warmup:
+            self.cost_baseline = current
+
     def report(self):
         import numpy as np
         if self.error or len(self.latencies) != self.spec['measured_updates']:
             raise ValueError(self.error or 'Incomplete measured updates')
         elapsed = self.end-self.start
         return dict(start_monotonic=self.start, end_monotonic=self.end,
-            updates=len(self.latencies), seconds=elapsed, updates_per_second=len(self.latencies)/elapsed,
+            section_costs=getattr(self, 'section_costs', {}), updates=len(self.latencies), seconds=elapsed, updates_per_second=len(self.latencies)/elapsed,
             latency_seconds=self.latencies, median_latency_seconds=float(np.median(self.latencies)),
             p95_latency_seconds=float(np.percentile(self.latencies, 95)),
             compute_section_seconds=sum(self.compute),
             compute_section_updates_per_second=len(self.compute)/sum(self.compute),
-            compute_section_definition='Host timed H2D, forward, backward, optimizer, scheduler, GPU synchronize; excludes loader and per-update metric logging, not pure GPU kernel time')
+            compute_section_definition='Host timed forward, backward, optimizer, scheduler, GPU synchronize; excludes loader and per-update metric logging, not pure GPU kernel time')
 
 
 class CancellableLoader:
@@ -266,11 +277,13 @@ def worker(spec_path):
         hooks = MeasurementHooks(spec, barrier)
         result = train(config['data'], config['output'], config['training'], max_updates=log.budget,
                        expected_model=config['model'], launch_config=config, logging_mode='plain',
-                       trial_id=spec['worker_id'], runtime_hooks=hooks)
+                       trial_id=spec['worker_id'], runtime_hooks=hooks, verification_receipt=spec.get('verification_receipt'))
         if result['interrupted'] or stopped.is_set() or hooks.error:
             raise InterruptedError(hooks.error or 'Benchmark training interrupted')
         training = hooks.report()
-        validation = evaluate_latest(config, spec, barrier, log, hooks.memory)
+        with open(Path(config['output'])/'.training.lock', 'a') as evaluation_lock:
+            fcntl.flock(evaluation_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            validation = evaluate_latest(config, spec, barrier, log, hooks.memory)
         if barrier.cancelled():
             raise InterruptedError('Benchmark interrupted after validation')
         result = dict(status='complete', worker_id=spec['worker_id'], training=training, validation=validation,
@@ -281,7 +294,8 @@ def worker(spec_path):
             checkpoint_seconds=sum(c['seconds'] for c in hooks.checkpoints), checkpoints=hooks.checkpoints,
             barrier_wait_seconds=barrier.waits, total_seconds=time.monotonic()-spec['launch_monotonic'],
             configuration=str(folder/'resolved.json'), config_sha256=spec['config_sha256'],
-            cpu_threads=config['training']['threads'], runtime=runtime_versions())
+            peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            cpu_threads=config['training']['threads'], runtime=runtime_versions(), profile=result)
         atomic_json(folder/'result.json', result)
         log.emit('benchmark_worker_complete', measured_updates=training['updates'])
         return 0
@@ -329,10 +343,11 @@ def default_command(spec_path):
 class PhaseRunner:
     """Launch one fixed-size cohort and drain it before the next phase starts."""
     def __init__(self, folder, specs, threads, timeout, shutdown_timeout=300,
-                 command_factory=default_command, heartbeat_seconds=60):
+                 command_factory=default_command, heartbeat_seconds=60, absolute_deadline=None):
         self.folder, self.specs = Path(folder), specs
         self.threads, self.timeout, self.shutdown_timeout = threads, timeout, shutdown_timeout
         self.command_factory, self.heartbeat_seconds = command_factory, heartbeat_seconds
+        self.absolute_deadline = absolute_deadline
         self.stopped = False
         self.log = BatchLogger(self.folder.name, 0)
         self.state = dict(status='running', workers={})
@@ -372,6 +387,8 @@ class PhaseRunner:
                 self.persist()
                 self.log.emit('worker_started', worker_id=worker_id, pid=process.pid, console=str(console_path))
             while active:
+                if self.absolute_deadline is not None and time.time() >= self.absolute_deadline:
+                    raise TimeoutError('Absolute allocation/run deadline reached')
                 if self.stopped:
                     raise InterruptedError('Benchmark interrupted')
                 failures = list(barrier_dir.glob('*.failure.json'))
@@ -507,13 +524,15 @@ def main(argv=None):
         affinity = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count()
         if (allocation and 4*args.threads > int(allocation)) or (affinity and 4*args.threads > affinity):
             raise ValueError('Four workers * --threads exceeds available CPU allocation/affinity')
-        if root == data or data in root.parents or any((p/'sweep.json').exists() for p in (root, *root.parents)):
+        if root == data or data in root.parents or any((p/'sweep.json').exists() or (p/'staged_sweep.json').exists() for p in (root, *root.parents)):
             raise ValueError('Benchmark output must be separate from prepared data and production sweeps')
         root.mkdir(parents=True, exist_ok=True)
         with open(root/'.coordinator.lock', 'a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if any(p.name != '.coordinator.lock' for p in root.iterdir()):
                 raise ValueError('Benchmark requires a new empty output directory; runs are never overwritten or resumed')
+            from .integrity import verify_once
+            verify_once(data, root/'verification.json')
             start = invocation_start
             (root/'baseline.json').write_bytes(BASELINE.read_bytes())
             (root/'data_manifest.json').write_bytes((data/'manifest.json').read_bytes())
@@ -546,7 +565,8 @@ def main(argv=None):
                         atomic_json(worker_dir/'resolved.json', config)
                         specs[worker_id] = dict(worker_id=worker_id, worker_dir=str(worker_dir), barrier_dir=str(folder/'barriers'),
                             config_sha256=digest(worker_dir/'resolved.json'), data_manifest_sha256=provenance['data_manifest_sha256'],
-                            warmup_updates=args.warmup_updates, measured_updates=args.measured_updates, barrier_timeout=args.barrier_timeout)
+                            warmup_updates=args.warmup_updates, measured_updates=args.measured_updates, barrier_timeout=args.barrier_timeout,
+                            verification_receipt=str(root/'verification.json'))
                     current[0] = PhaseRunner(folder, specs, args.threads, args.barrier_timeout, args.shutdown_timeout)
                     if stopped.is_set():
                         raise InterruptedError('Benchmark interrupted before phase launch')

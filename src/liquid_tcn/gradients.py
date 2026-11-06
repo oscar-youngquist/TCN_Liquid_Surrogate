@@ -30,9 +30,9 @@ def backward_objectives(primary, secondary, parameters, strategy='pcgrad', eps=1
 
     a = gradients(primary, retain_graph=secondary is not None)
     b = gradients(secondary)
-    for gradient in (*a, *b):
-        if gradient is not None and not torch.isfinite(gradient).all():
-            raise FloatingPointError('Nonfinite objective gradient before projection')
+    finite = [torch.isfinite(g).all() for g in (*a, *b) if g is not None]
+    if finite and not torch.stack(finite).all():
+        raise FloatingPointError('Nonfinite objective gradient before projection')
     shared = [i for i, (x, y) in enumerate(zip(a, b)) if x is not None and y is not None]
     diagnostics = dict(projected=0., dot_before=0., dot_after=0., cosine_before=0.,
                        primary_norm=0., secondary_norm=0.)
@@ -53,6 +53,7 @@ def backward_objectives(primary, secondary, parameters, strategy='pcgrad', eps=1
         if not all(math.isfinite(value) for value in diagnostics.values()):
             raise FloatingPointError('Nonfinite gradient projection diagnostics')
     offset = 0
+    finite = []
     for p, x, y in zip(parameters, a, b):
         if x is not None and y is not None:
             size = p.numel()
@@ -60,7 +61,9 @@ def backward_objectives(primary, secondary, parameters, strategy='pcgrad', eps=1
             offset += size
         else:
             gradient = x if y is None else y
-        if gradient is not None and not torch.isfinite(gradient).all():
-            raise FloatingPointError('Nonfinite merged gradient')
+        if gradient is not None:
+            finite.append(torch.isfinite(gradient).all())
         p.grad = None if gradient is None else gradient.detach().clone()
+    if finite and not torch.stack(finite).all():
+        raise FloatingPointError('Nonfinite merged gradient')
     return diagnostics

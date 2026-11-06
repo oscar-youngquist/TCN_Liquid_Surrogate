@@ -302,3 +302,13 @@ checkpoint configuration equality. With no options, older checkpoints use
 outside Slurm, and when `training.progress` is true. Otherwise it emits plain
 batch events; setting `training.progress=false` no longer makes the console silent.
 Explicit `--logging-mode progress` takes precedence over that legacy boolean.
+
+
+## Staged search configuration
+
+The [staged sweep guide](staged_sweeps.md) documents its launcher options,
+dependent hyperparameter generation, fixed 20,000-update schedule, resource
+preflight and persistent deadline. It derives candidates from the packaged
+baseline rather than the editable local `combined.json`. Exact generated configs
+are saved under each trial's `resolved.json`; runtime logging, verification receipts
+and timing hooks do not become checkpoint-equality configuration fields.

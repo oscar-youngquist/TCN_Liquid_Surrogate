@@ -164,7 +164,7 @@ def initialize(root, data, devices, threads, resume):
     return manifest, state
 
 
-def inspect_result(root, trial_id, stage, manifest):
+def inspect_result(root, trial_id, stage, manifest, *, budget=None, allow_early_stop=True):
     """Accept only completed, full-validation, internally consistent checkpoints."""
     from .checkpoint import load_checkpoint
     from .model import ModelConfig
@@ -177,10 +177,11 @@ def inspect_result(root, trial_id, stage, manifest):
                 or saved['effective_updates'] != config['training']['updates']
                 or ModelConfig(**saved['model_config']) != ModelConfig(**config['model'])):
             raise ValueError('Checkpoint configuration/provenance mismatch')
-    if latest['update'] != BUDGETS[stage] and not (
+    required = BUDGETS[stage] if budget is None else budget
+    if latest['update'] != required and not (allow_early_stop and
             stage == 'continue' and latest['stale'] >= config['training']['patience']
             and BUDGETS['screen'] <= latest['update'] <= BUDGETS[stage]):
-        raise ValueError(f"Incomplete {stage}: checkpoint update {latest['update']}, required {BUDGETS[stage]}")
+        raise ValueError(f"Incomplete {stage}: checkpoint update {latest['update']}, required {required}")
     report = best['validation']
     score = report['selection_metric']
     if (score is None or not math.isfinite(score) or report['coverage']['fraction'] != 1
@@ -225,13 +226,15 @@ def worker_command(root, trial_id, stage, resume):
 class Coordinator:
     """One owner serializes state/events; training runs in independent processes."""
     def __init__(self, root, manifest, state, concurrency=4, command_factory=worker_command,
-                 inspect=inspect_result, heartbeat_seconds=60):
-        if not 1 <= concurrency <= 4:
-            raise ValueError('concurrency must be between 1 and 4')
+                 inspect=inspect_result, heartbeat_seconds=60, max_concurrency=4, deadline=None, device_limits=None, shutdown_timeout=300):
+        if not 1 <= concurrency <= max_concurrency:
+            raise ValueError(f'concurrency must be between 1 and {max_concurrency}')
         self.root, self.manifest, self.state = root, manifest, state
         self.concurrency, self.command_factory, self.inspect = concurrency, command_factory, inspect
         self.heartbeat_seconds = heartbeat_seconds
         self.stopping = False
+        self.deadline, self.device_limits, self.shutdown_timeout = deadline, device_limits, shutdown_timeout
+        self.stop_time = None
 
     def stop(self, number=None, frame=None):
         self.stopping = True
@@ -245,8 +248,23 @@ class Coordinator:
         heartbeat = time.monotonic()
         try:
             while pending or active:
+                if self.deadline is not None and time.time() >= self.deadline:
+                    self.stop()
                 while pending and len(active) < self.concurrency and not self.stopping:
-                    trial_id = pending.pop(0)
+                    position = 0
+                    if self.device_limits:
+                        occupied = {}
+                        for _, _, _, a in active.values():
+                            occupied[a['device']] = occupied.get(a['device'], 0)+1
+                        eligible = [i for i, t in enumerate(pending) if occupied.get(
+                            read_json(self.root/'trials'/t/'resolved.json')['training']['device'], 0) < self.device_limits.get(
+                            read_json(self.root/'trials'/t/'resolved.json')['training']['device'], 0)]
+                        if not eligible:
+                            if not active:
+                                raise ValueError('No resource slot for pending trial')
+                            break
+                        position = eligible[0]
+                    trial_id = pending.pop(position)
                     row = self.state['trials'][trial_id]
                     checkpoint = self.root/'trials'/trial_id/'run/latest.pt'
                     if stage == 'continue' and not checkpoint.exists():
@@ -266,11 +284,17 @@ class Coordinator:
                     attempt = dict(stage=stage, status='running', hostname=socket.gethostname(), started=datetime.now(timezone.utc).isoformat(),
                                    console=str(console), exit_code=None,
                                    resume_checkpoint_sha256=digest(checkpoint) if checkpoint.exists() else None)
+                    config_path = self.root/'trials'/trial_id/'resolved.json'
+                    if config_path.exists():
+                        c = read_json(config_path)['training']
+                        attempt.update(device=c['device'], seed=c['seed'])
                     row['attempts'].append(attempt)
                     row['stages'][stage] = dict(status='running')
                     self.persist()
                     handle = open(console, 'x')
                     env = worker_environment(self.manifest['threads'])
+                    if self.manifest.get('deadline') is not None:
+                        env['LIQUID_RUN_DEADLINE'] = str(self.manifest['deadline'])
                     try:
                         process = subprocess.Popen(self.command_factory(self.root, trial_id, stage, checkpoint.exists()),
                                                    stdout=handle, stderr=subprocess.STDOUT, env=env)
@@ -286,7 +310,11 @@ class Coordinator:
                     active[trial_id] = (process, handle, time.monotonic(), attempt)
                     event('trial_started', trial_id=trial_id, stage=stage, pid=process.pid, console=str(console))
                 if self.stopping:
+                    if self.stop_time is None:
+                        self.stop_time = time.monotonic()
                     for process, _, _, attempt in active.values():
+                        if time.monotonic()-self.stop_time > self.shutdown_timeout and process.poll() is None:
+                            process.kill()
                         if not attempt.get('stop_requested'):
                             process.send_signal(signal.SIGTERM)
                             attempt['stop_requested'] = True
@@ -324,7 +352,10 @@ class Coordinator:
                 if time.monotonic()-heartbeat >= self.heartbeat_seconds:
                     statuses = [row['stages'].get(stage, {}).get('status') for row in self.state['trials'].values()]
                     event('heartbeat', stage=stage, running=list(active), pending=len(pending),
-                          completed=statuses.count('complete'), failed=statuses.count('failed'))
+                          completed=statuses.count('complete'), failed=statuses.count('failed'),
+                          elapsed_seconds=None if 'started' not in self.manifest else time.time()-self.manifest['started'],
+                          remaining_seconds=None if self.deadline is None else max(0, self.deadline-time.time()),
+                          workers={t: {k:a.get(k) for k in ('device','seed','started')} for t, (_,_,_,a) in active.items()})
                     heartbeat = time.monotonic()
                 if active:
                     time.sleep(.2)
@@ -334,8 +365,13 @@ class Coordinator:
             for process, _, _, _ in active.values():
                 if process.poll() is None:
                     process.send_signal(signal.SIGTERM)
+            finish_by = time.monotonic()+self.shutdown_timeout
             for trial_id, (process, handle, started, attempt) in active.items():
-                code = process.wait()
+                try:
+                    code = process.wait(timeout=max(0,finish_by-time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    code = process.wait()
                 handle.close()
                 attempt.update(exit_code=code, status='interrupted', wall_seconds=time.monotonic()-started,
                                error='Coordinator aborted; worker drained before releasing lock')

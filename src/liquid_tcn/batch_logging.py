@@ -27,7 +27,38 @@ class BatchLogger:
         self.state.update({k: v for k, v in values.items() if k in self.state})
         record = dict(timestamp=datetime.now(timezone.utc).isoformat(), event=event,
                       trial_id=self.trial_id, budget=self.budget, **self.state,
+                      elapsed_seconds=time.monotonic()-self.start,
+                      remaining_seconds=max(0,float(os.environ['LIQUID_RUN_DEADLINE'])-time.time()) if os.environ.get('LIQUID_RUN_DEADLINE') else None,
                       updates_per_second=(self.state['update']-self.initial)/max(time.monotonic()-self.start, 1e-9))
         record.update(values)
         # JSON escapes newlines/control characters in exceptions and identifiers.
         print(json.dumps(record, allow_nan=False), flush=True)
+
+
+class MetricWriter:
+    """Persistent JSONL stream, bounded buffering, flushed with checkpoints."""
+    def __init__(self, path, flush_seconds=10, flush_records=100):
+        self.stream = open(path, 'a', buffering=65536)
+        self.flush_seconds, self.flush_records = flush_seconds, flush_records
+        self.last_flush, self.pending = time.monotonic(), 0
+
+    def write(self, record):
+        self.stream.write(json.dumps(record, allow_nan=False)+'\n')
+        self.pending += 1
+        if self.pending >= self.flush_records or time.monotonic()-self.last_flush >= self.flush_seconds:
+            self.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.pending, self.last_flush = 0, time.monotonic()
+
+    def close(self):
+        self.flush()
+        self.stream.close()
+
+
+def write_scalars(writer, values, step):
+    """One TensorBoard event per update, retaining every scalar tag and step."""
+    from tensorboard.compat.proto.summary_pb2 import Summary
+    writer.file_writer.add_summary(Summary(value=[Summary.Value(tag=k, simple_value=float(v))
+                                                  for k,v in values.items()]), step)

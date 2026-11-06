@@ -117,6 +117,7 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
              supervised='mse', huber_delta=1., lambda_short=0., lambda_long=0., physics_dtype='float64'):
     model.eval()
     overall, ground_truth, groups = Metrics(), Metrics(), {}
+    maneuvers = {}
     sums = np.zeros(5); mse_sums = np.zeros(5); counts = np.zeros(5, dtype=np.int64)
     dataset = loader.dataset
     batches = loader if max_batches is None else islice(loader, max_batches)
@@ -148,6 +149,10 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
         for group in np.unique(labels):
             selected = labels == group
             groups.setdefault(group, Metrics()).add(result['physical'], batch, result, selected, prepared=prepared)
+        maneuver_labels = [dataset.series[s].get('maneuver') for s in ids]
+        for label in sorted({str(v) for v in maneuver_labels if v is not None}):
+            selected = np.array([v is not None and str(v)==label for v in maneuver_labels])
+            maneuvers.setdefault(label, Metrics()).add(result['physical'], batch, result, selected, prepared=prepared)
     report = overall.report()
     report.update(metric_name='normalized_supervised_mse_all_heads',
         selection_metric=float(mse_sums.sum()/(3*counts.sum())) if counts.sum() else None,
@@ -157,6 +162,8 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
         coverage=dict(eligible_windows=len(dataset), evaluated_windows=overall.windows,
             fraction=overall.windows/len(dataset) if len(dataset) else 0,
             preparation_counts=dataset.manifest['counts']),
+        per_maneuver={k:v.report() for k,v in maneuvers.items()} or None,
+        maneuver_metadata='recorded prepared-series maneuver field' if maneuvers else 'unavailable',
         weighting='window-weighted; overlapping endpoints counted per window',
         units=dict(force='N', moment='N m', r_B='m', v_B='m/s', S_B='kg m^2/s'),
         lag_definition='demeaned vector cross-correlation within each window, +/- 50 ms; positive means prediction delayed')
