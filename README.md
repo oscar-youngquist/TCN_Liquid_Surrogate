@@ -256,3 +256,8 @@ can resume to the full budget. All selection uses full validation, never test da
 Training supports `--logging-mode auto|plain|progress`. Non-TTY and Slurm runs use
 plain timestamped logging by default; the sweep always uses it. TensorBoard and
 per-update JSONL loss records retain their existing detail.
+
+For a measured comparison of one versus four workers sharing a GPU, see the
+[standalone concurrency benchmark](docs/benchmark.md). Run
+`scripts/benchmark_tcn_concurrency.sh` inside an existing allocation; it uses sweep
+trial `00`, a 200-update warmup, 300 measured updates, and separate full validation.

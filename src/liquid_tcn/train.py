@@ -84,8 +84,13 @@ def precision_check(model, batch, norm, config):
 
 
 def train(data, output, configuration=None, resume=None, max_updates=None,
-          expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone'):
+          expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone',
+          runtime_hooks=None):
     """Logging is a runtime option, deliberately outside checkpoint configuration.
+
+    Optional runtime_hooks observe ready/update/checkpoint boundaries; they are
+    never serialized and may defer scheduled maintenance for timing experiments.
+    Ordinary training uses no hooks.
 
     Older checkpoints therefore need no migration: omitted logging_mode means
     auto and omitted trial_id means standalone. SIGTERM/SIGINT only set a flag;
@@ -112,7 +117,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         log.emit('startup', output=str(output), resume=str(resume) if resume else None,
                  scheduler_horizon=config['updates'])
         return _train(data, output, configuration, resume, max_updates, expected_model,
-                      launch_config, logging_mode, log, stop_requested, received)
+                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks)
     except BaseException as error:
         log.emit('failure', error_type=type(error).__name__, error=str(error))
         raise
@@ -124,7 +129,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
 
 
 def _train(data, output, configuration, resume, max_updates, expected_model,
-           launch_config, logging_mode, log, stop_requested, received):
+           launch_config, logging_mode, log, stop_requested, received, runtime_hooks):
     mode = resolve_mode(logging_mode, (configuration or {}).get('progress', True))
     unknown = set(configuration or {}) - set(DEFAULTS)
     if unknown:
@@ -145,6 +150,9 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     random.seed(config['seed']); np.random.seed(config['seed']); torch.manual_seed(config['seed'])
     torch.use_deterministic_algorithms(True)
     device = torch.device(config['device'])
+    if runtime_hooks is not None:
+        runtime_hooks.bind(device, stop_requested, log)
+    defer_maintenance = runtime_hooks is not None and runtime_hooks.defer_maintenance
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ('latest.pt', 'config.json')) and resume is None:
         raise ValueError('Run exists; supply --resume or use a fresh output')
@@ -235,6 +243,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     # is flushed alongside model/optimizer state; purge_step above hides stale
     # log events beyond the restored checkpoint when resuming an interrupted run.
     def save(name):
+        checkpoint_start = time.monotonic() if runtime_hooks is not None else None
         writer.flush()
         atomic_save(output/name, dict(format_version=1, model=model.state_dict(), model_config=asdict(model.config),
             optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict(),
@@ -244,12 +253,16 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
             data_provenance=dict(sources=training.manifest['sources'], windows=training.manifest['windows'],
                                  preparation_config=training.manifest['config']), validation=last_validation))
         log.emit('checkpoint', update=update, checkpoint=str(output/name))
+        if runtime_hooks is not None:
+            runtime_hooks.checkpoint(update, name, time.monotonic()-checkpoint_start)
 
     progress = TrainingProgress(total=stop, initial=update, disable=mode != 'progress')
     previous_phase = None
     try:
         if not resume:
             save('latest.pt')
+        if runtime_hooks is not None:
+            runtime_hooks.ready(update)
         while update < stop and stale < config['patience'] and not stop_requested.is_set():
             if sampler.position == sampler.length:
                 sampler.next_epoch()
@@ -284,7 +297,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 sampler.advance(len(batch['motion'])); update += 1
                 if device.type == 'cuda':
                     torch.cuda.synchronize(device)
-                timing['training_seconds'] += time.perf_counter()-train_start
+                compute_seconds = time.perf_counter()-train_start
+                timing['training_seconds'] += compute_seconds
                 timing['samples'] += len(batch['motion']); timing['updates'] += 1
                 timing['clipped'] += int(grad > config['gradient_clip'])
                 record = dict(update=update, loss=float(result['loss'].detach()), supervised=float(result['supervised'].detach()),
@@ -295,7 +309,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     secondary=float(result['secondary'].detach()), projection=projection,
                     loss_components=loss_components(result, short, long))
                 log.state.update({key: record[key] for key in log.state if key in record})
-                if update % config['validation_every'] == 0 or update == total_updates:
+                if not defer_maintenance and (update % config['validation_every'] == 0 or update == total_updates):
                     log.emit('validation_start', update=update)
                     vstart = time.perf_counter()
                     last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'],
@@ -353,7 +367,11 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     val='pending' if last_validation is None else f"{last_validation['selection_metric']:.4g}", refresh=False)
                 if update % 250 == 0:
                     log.emit('updates', update=update)
-                if update % config['checkpoint_every'] == 0:
+                if runtime_hooks is not None:
+                    # End-to-end timing includes data loading and ordinary logging.
+                    # Benchmark barriers run here, before any checkpoint I/O.
+                    runtime_hooks.update_end(update, compute_seconds, writer)
+                if not defer_maintenance and update % config['checkpoint_every'] == 0:
                     save('latest.pt')
                 if update >= stop or stale >= config['patience'] or stop_requested.is_set():
                     break

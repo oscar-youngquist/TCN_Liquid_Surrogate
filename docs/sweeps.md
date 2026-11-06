@@ -263,3 +263,12 @@ sandbox the existing multiworker loader test stalled waiting for its worker queu
 The Bash syntax check, quoted-path launcher dry run, and wheel build also passed;
 the wheel includes the reviewed baseline snapshot. No real sweep, production
 training run, or scheduler submission was performed.
+
+## Measuring process concurrency
+
+Use the standalone [single-versus-four-process benchmark](benchmark.md) before
+choosing how many trials to share on one GPU. It derives all five workers from
+trial `00`, measures updates 201–500 after a coordinated warmup, and separately
+measures full validation on the final checkpoint. It does not run the sweep or
+change its promotion rules. The guide documents the launcher, timing definitions,
+memory telemetry limits, and failure handling.

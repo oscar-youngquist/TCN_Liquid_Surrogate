@@ -61,6 +61,15 @@ def code_provenance():
     return dict(commit=commit, source_sha256=fingerprint, source_files=files)
 
 
+def worker_environment(threads):
+    """Bound each independent worker's math-library pools without remapping GPUs."""
+    env = os.environ.copy()
+    env.update(OMP_MAX_ACTIVE_LEVELS='1', PYTHONUNBUFFERED='1', OMP_NUM_THREADS=str(threads),
+               MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
+               NUMEXPR_NUM_THREADS=str(threads))
+    return env
+
+
 def runtime_versions():
     import numpy
     import torch
@@ -261,10 +270,7 @@ class Coordinator:
                     row['stages'][stage] = dict(status='running')
                     self.persist()
                     handle = open(console, 'x')
-                    env = os.environ.copy()
-                    env.update(OMP_MAX_ACTIVE_LEVELS='1', PYTHONUNBUFFERED='1', OMP_NUM_THREADS=str(self.manifest['threads']),
-                               MKL_NUM_THREADS=str(self.manifest['threads']), OPENBLAS_NUM_THREADS=str(self.manifest['threads']),
-                               NUMEXPR_NUM_THREADS=str(self.manifest['threads']))
+                    env = worker_environment(self.manifest['threads'])
                     try:
                         process = subprocess.Popen(self.command_factory(self.root, trial_id, stage, checkpoint.exists()),
                                                    stdout=handle, stderr=subprocess.STDOUT, env=env)
