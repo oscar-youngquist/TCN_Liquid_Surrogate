@@ -312,3 +312,15 @@ preflight and persistent deadline. It derives candidates from the packaged
 baseline rather than the editable local `combined.json`. Exact generated configs
 are saved under each trial's `resolved.json`; runtime logging, verification receipts
 and timing hooks do not become checkpoint-equality configuration fields.
+
+
+Staged recovery/monitoring/selection is a runtime policy, separate from optimizer
+parameter identity: recovery every 200 updates, fixed 5% subset MSE every 1,000,
+exact endpoint full validation for stages 1–5, and final-stage patience 3 eligible
+at `pretrain_updates + ramp_updates`. `min_delta` affects patience only; the three
+lowest raw subset scores plus stopping update form the full-validation shortlist.
+See [the staged schedule and resume rules](staged_sweeps.md#configuration-and-comparisons).
+
+Subset monitoring also computes and logs both physics objectives with per-channel
+losses and valid counts. These do not affect patience or checkpoint ranking. Full
+validation retains physics, wrench, lag and group diagnostics.

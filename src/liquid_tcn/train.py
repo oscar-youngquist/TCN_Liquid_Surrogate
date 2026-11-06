@@ -85,7 +85,7 @@ def precision_check(model, batch, norm, config):
 
 def train(data, output, configuration=None, resume=None, max_updates=None,
           expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone',
-          runtime_hooks=None, verification_receipt=None):
+          runtime_hooks=None, verification_receipt=None, staged_policy=None):
     """Logging is a runtime option, deliberately outside checkpoint configuration.
 
     Optional runtime_hooks observe ready/update/checkpoint boundaries; they are
@@ -117,7 +117,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         log.emit('startup', output=str(output), resume=str(resume) if resume else None,
                  scheduler_horizon=config['updates'])
         return _train(data, output, configuration, resume, max_updates, expected_model,
-                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt)
+                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt, staged_policy)
     except BaseException as error:
         log.emit('failure', error_type=type(error).__name__, error=str(error))
         raise
@@ -129,7 +129,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
 
 
 def _train(data, output, configuration, resume, max_updates, expected_model,
-           launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt):
+           launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt, staged_policy):
     mode = resolve_mode(logging_mode, (configuration or {}).get('progress', True))
     unknown = set(configuration or {}) - set(DEFAULTS)
     if unknown:
@@ -152,7 +152,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     device = torch.device(config['device'])
     if runtime_hooks is not None:
         runtime_hooks.bind(device, stop_requested, log)
-    defer_maintenance = runtime_hooks is not None and runtime_hooks.defer_maintenance
+    defer_maintenance = staged_policy is not None or (runtime_hooks is not None and runtime_hooks.defer_maintenance)
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ('latest.pt', 'config.json')) and resume is None:
         raise ValueError('Run exists; supply --resume or use a fresh output')
@@ -253,20 +253,26 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
             rng=rng_state(), sampler=sampler.state_dict(), best=best, stale=stale,
             normalization=norm.stats, config=config, data_manifest_sha256=provenance,
             data_provenance=dict(sources=training.manifest['sources'], windows=training.manifest['windows'],
-                                 preparation_config=training.manifest['config']), validation=last_validation))
+                                 preparation_config=training.manifest['config']), validation=last_validation,
+            **({'stage_monitoring': staged_policy.state} if staged_policy is not None else {})))
         timing['checkpoint_seconds'] += time.monotonic()-checkpoint_start
         log.emit('checkpoint', update=update, checkpoint=str(output/name))
         if runtime_hooks is not None:
             runtime_hooks.checkpoint(update, name, time.monotonic()-checkpoint_start)
 
+    initial_update = update
+    if staged_policy is not None:
+        staged_policy.attach(model,norm,validation,val_loader,config,output,saved if resume else None,update,save,stop_requested,log,writer)
     progress = TrainingProgress(total=stop, initial=update, disable=mode != 'progress')
     previous_phase = None
     try:
+        if resume and staged_policy is not None and staged_policy.pending_monitor(update):
+            staged_policy.after_update(update)
         if not resume:
             save('latest.pt')
         if runtime_hooks is not None:
             runtime_hooks.ready(update)
-        while update < stop and stale < config['patience'] and not stop_requested.is_set():
+        while update < stop and stale < config['patience'] and not stop_requested.is_set() and not (staged_policy is not None and staged_policy.patience_stop):
             if sampler.position == sampler.length:
                 sampler.next_epoch()
             sampler.limit = (stop - update) * config['batch_size']
@@ -392,13 +398,20 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                             writer.flush()
                             metrics.flush()
                     runtime_hooks.update_end(update, compute_seconds, FlushLogs())
+                if staged_policy is not None:
+                    staged_policy.after_update(update)
                 if not defer_maintenance and update % config['checkpoint_every'] == 0:
                     save('latest.pt')
-                if update >= stop or stale >= config['patience'] or stop_requested.is_set():
+                if update >= stop or stale >= config['patience'] or stop_requested.is_set() or (staged_policy is not None and staged_policy.patience_stop):
                     break
                 tick = time.perf_counter()
-        save('latest.pt')
+        if staged_policy is None or not resume or update != initial_update or stop_requested.is_set():
+            save('latest.pt')
+        if staged_policy is not None:
+            staged_policy.finish(update)
     finally:
+        if staged_policy is not None:
+            staged_policy.close()
         progress.close()
         writer.close()
         metrics.close()
@@ -409,7 +422,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         peak_device_bytes=torch.cuda.max_memory_allocated(device) if device.type=='cuda' else 0,
         clipped_fraction=timing['clipped']/max(timing['updates'], 1), final_update=update,
-        stopped_early=stale >= config['patience'], interrupted=stop_requested.is_set(),
+        stopped_early=(staged_policy.patience_stop if staged_policy is not None else stale >= config['patience']), interrupted=stop_requested.is_set(),
         signal=received[-1] if received else None)
     atomic_json(output/'profile.json', timing)
     log.emit('interrupted' if stop_requested.is_set() else 'completion', update=update, stopped_early=timing['stopped_early'])

@@ -165,7 +165,11 @@ def initialize(root, data, devices, threads, resume):
 
 
 def inspect_result(root, trial_id, stage, manifest, *, budget=None, allow_early_stop=True):
-    """Accept only completed, full-validation, internally consistent checkpoints."""
+    """Legacy best-validation selection with full checkpoint consistency checks.
+
+    The staged sweep uses its explicit endpoint/shortlist selection record instead;
+    a legacy historical-best score must never promote a staged search candidate.
+    """
     from .checkpoint import load_checkpoint
     from .model import ModelConfig
     config = read_json(root/'trials'/trial_id/'resolved.json')

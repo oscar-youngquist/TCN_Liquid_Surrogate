@@ -34,7 +34,8 @@ def frozen_selections(root, state):
             raise ValueError('Selected checkpoint changed')
         rows.append(dict(**entry, seed=cfg['training']['seed'], checkpoint=result['best_checkpoint'],
                          checkpoint_sha256=result['best_sha256'], config_sha256=digest(config_path),
-                         validation_metric=result['normalized_mse'], best_update=result['best_update']))
+                         validation_metric=result['normalized_mse'], best_update=result['best_update'],
+                         stopping_reason=result['stopping_reason'],stopping_update=result['update'],subset_coverage=result['subset_coverage']))
     return dict(selections=rows, rule='best full-validation normalized_supervised_mse_all_heads',
                 dataset_sha256=state['data_manifest_sha256'])
 
@@ -59,12 +60,14 @@ def run_worker(root, trial, stage, resume=False):
           device=config['training']['device'], remaining_seconds=manifest['deadline']-time.time())
     if stage != 'test':
         from .train import train
+        from .staged_validation import StageValidation
+        policy = StageValidation(stage,BUDGETS[stage],root/'monitor_subset.json',manifest['deadline']-1800)
         result = train(config['data'], config['output'], config['training'],
             resume=str(Path(config['output'])/'latest.pt') if resume else None,
             max_updates=BUDGETS[stage], expected_model=config['model'], launch_config=config,
             logging_mode='plain', trial_id=f'stage{stage}/{trial}/seed{config["training"]["seed"]}/{config["training"]["device"]}',
-            verification_receipt=root/'verification.json')
-        return int(result['interrupted'] or result['final_update'] != BUDGETS[stage])
+            verification_receipt=root/'verification.json',staged_policy=policy)
+        return int(result['interrupted'] or not (Path(config['output']).parent/stage/'selection.json').exists())
     with open(Path(config['output'])/'.training.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return evaluate_selected(root, trial, config, manifest)
@@ -72,6 +75,13 @@ def run_worker(root, trial, stage, resume=False):
 
 def evaluate_selected(root, trial, config, manifest):
     selected = verify_test_gate(root, trial)
+    cached=root/'trials'/trial/'test.json'
+    if cached.exists():
+        result=read_json(cached)
+        if result['selection']!=selected or result['frozen_sha256']!=digest(root/'final_selections.json'):
+            raise ValueError('Cached test selection changed')
+        return 0
+    event('validation_start',scope='test',trial=trial,update=selected['best_update'])
     from .checkpoint import load_checkpoint
     from .dataset import WindowDataset, make_loader, close_loader
     from .evaluate import evaluate
@@ -125,7 +135,25 @@ def inspect(root, trial, stage, manifest):
     if digest(config_path) != manifest['configs'][trial]:
         raise ValueError('Resolved configuration changed')
     if stage != 'test':
-        return inspect_result(root, trial, stage, manifest, budget=BUDGETS[stage], allow_early_stop=False)
+        from .checkpoint import load_checkpoint
+        cfg = read_json(config_path)
+        result = read_json(root/'trials'/trial/stage/'selection.json')
+        rank([trial], {'trials':{trial:{'stages':{stage:dict(status='complete',result=result)}}}},stage)
+        validation=read_json(result['per_payload_report'])
+        if validation['coverage']['fraction']!=1 or validation['selection_metric']!=result['normalized_mse']:
+            raise ValueError('Selected score requires matching full validation')
+        if result['subset_sha256'] != digest(root/'monitor_subset.json'):
+            raise ValueError('Selection monitoring subset changed')
+        for kind in ('best','latest'):
+            if digest(result[kind+'_checkpoint'])!=result[kind+'_sha256']:
+                raise ValueError('Selected checkpoint changed')
+            saved = load_checkpoint(result[kind+'_checkpoint'])
+            expected = result['best_update'] if kind=='best' else result['update']
+            if kind=='latest' and saved.get('stage_monitoring')!=result['monitoring']:
+                raise ValueError('Monitoring resume state mismatch')
+            if saved['config']!=cfg['training'] or saved['update']!=expected or saved['data_manifest_sha256']!=manifest['data_manifest_sha256']:
+                raise ValueError('Selection checkpoint provenance mismatch')
+        return result
     selected = verify_test_gate(root, trial)
     value = read_json(root/'trials'/trial/'test.json')
     if value['selection'] != selected or value['frozen_sha256'] != digest(root/'final_selections.json'):
@@ -275,6 +303,13 @@ def report(root, manifest, state):
         lines.append(f'| {stage} | {BUDGETS[stage]} | {len(p["entries"])} | {(state["rankings"].get(stage) or ["incomplete"])[0]} |')
     lines += ['', 'Per-run physical errors, conservation residuals, peak/lag metrics, grouping coverage, checkpoint identities, config hashes and provenance are in [report.json](report.json).',
               'Seed summaries use sample standard deviation (ddof=1). Full-minus-ablation differences are paired by seed. Test results do not enter rankings.']
+    if '6' in state['plans']:
+        lines += ['', '| Final run | Stop reason/update | Selected update | Full validation MSE | Subset coverage |',
+                  '|---|---|---:|---:|---:|']
+        for entry in state['plans']['6']['entries']:
+            r=state['trials'][entry['trial']]['stages'].get('6',{}).get('result')
+            if r:
+                lines.append(f"| {entry['label']} | {r['stopping_reason']} / {r['update']} | {r['best_update']} | {r['normalized_mse']:.6g} | {r['subset_coverage']:.3%} |")
     if value['seed_summary']:
         lines += ['', '| Variant | Force x RMSE mean ± seed SD (N) | Moment x RMSE mean ± seed SD (N m) |', '|---|---:|---:|']
         for variant,metrics in value['seed_summary']['across_seeds'].items():
@@ -342,6 +377,13 @@ def main(argv=None):
                     except BlockingIOError:
                         raise ValueError(f'Existing worker still owns {path}; wait for it to exit')
             verify_once(args.data,root/'verification.json')
+            from .staged_validation import monitoring_subset
+            monitoring_subset(args.data,root/'monitor_subset.json')
+            subset_hash=digest(root/'monitor_subset.json')
+            if manifest.get('monitor_subset_sha256',subset_hash)!=subset_hash:
+                raise ValueError('Fixed monitoring subset changed')
+            manifest['monitor_subset_sha256']=subset_hash
+            persist()
             resources = available_resources()
             cpu_limit(args.concurrency,args.threads,resources)
             if 'measurement' not in state:
@@ -382,11 +424,11 @@ def main(argv=None):
                     cfg=read_json(root/'trials'/entry['trial']/'resolved.json')
                     completed = max([r.get('result',{}).get('update',0) for r in state['trials'][entry['trial']]['stages'].values() if r.get('status')=='complete'] or [0])
                     remaining=max(0,BUDGETS[stage]-completed)
-                    jobs.append((cfg['training']['device'],remaining,math.ceil(remaining/1000)))
+                    jobs.append((cfg['training']['device'],remaining,math.ceil(remaining/1000),4 if stage=='6' else 1))
                 placement=[d for d,n in slots.items() for _ in range(n)]
                 for future,_,number in STAGES:
                     if int(future)>int(stage) and future!='5':
-                        jobs += [(placement[i%len(placement)],BUDGETS[future],BUDGETS[future]//1000) for i in range(number)]
+                        jobs += [(placement[i%len(placement)],BUDGETS[future],BUDGETS[future]//1000,4 if future=='6' else 1) for i in range(number)]
                 data_manifest=read_json(root/'data_manifest.json')
                 estimate=forecast(jobs,slots,state['measurement'],data_manifest['windows']['test'],data_manifest['windows']['validation'])
                 # Optional joint refinement is the first work removed. All retained

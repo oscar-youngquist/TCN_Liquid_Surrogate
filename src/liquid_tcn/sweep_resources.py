@@ -82,8 +82,20 @@ def forecast(jobs, slots, measurements, test_windows, validation_windows):
     validation = max(w['validation']['seconds'] for w in workers)
     setup = max(w['startup_including_initial_checkpoint_seconds']+w['checkpoint_seconds'] for w in workers)
     queues = {d:[0.]*n for d,n in slots.items()}
-    for device, updates, validations in jobs:
-        cost = setup + updates*update + validations*validation + math.ceil(updates/500)*max(w['checkpoint_seconds'] for w in workers)
+    subset_total = full_total = checkpoint_total = endpoint_total = shortlist_total = 0.
+    for job in jobs:
+        device, updates, validations = job[:3]
+        full = job[3] if len(job)>3 else validations
+        subset = validations if len(job)>3 else 0
+        subset_cost = subset*validation*.05
+        full_cost = full*validation
+        if len(job)>3 and full==4:
+            shortlist_total += full_cost
+        else:
+            endpoint_total += full_cost
+        checkpoint_cost = (math.ceil(updates/200)+subset)*max(w['checkpoint_seconds'] for w in workers)
+        subset_total += subset_cost; full_total += full_cost; checkpoint_total += checkpoint_cost
+        cost = setup + updates*update + subset_cost + full_cost + checkpoint_cost
         queue = queues[device]
         i = min(range(len(queue)), key=queue.__getitem__)
         queue[i] += cost*1.25
@@ -91,7 +103,9 @@ def forecast(jobs, slots, measurements, test_windows, validation_windows):
     tests = math.ceil(12/sum(slots.values()))*(setup+validation*test_windows/max(1,validation_windows))*1.25
     return dict(training_seconds=training, test_seconds=tests, shutdown_reporting_seconds=1800,
                 total_seconds=training+tests+1800, per_update_seconds=update,
-                full_validation_seconds=validation, safety_factor=1.25)
+                full_validation_seconds=validation, subset_check_seconds_estimate=.05*validation,
+                subset_worker_seconds=subset_total,full_validation_worker_seconds=full_total,
+                endpoint_worker_seconds=endpoint_total,shortlist_worker_seconds=shortlist_total,checkpoint_worker_seconds=checkpoint_total,safety_factor=1.25)
 
 
 def profile_loader_settings(data, baseline, slots, resources, deadline):

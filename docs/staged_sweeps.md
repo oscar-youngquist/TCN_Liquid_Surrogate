@@ -59,8 +59,28 @@ in [sweeps.md](sweeps.md). Baseline batch size 1024, model configuration,
 normalization, FP32 network, float64 physics, AdamW and one-way PCGrad are retained.
 The source fingerprint records the actual installed implementation, including
 working-tree changes; the baseline JSON alone does not specify Python code.
-Full validation runs every 1000 updates; checkpoints are written every 500.
-Patience is set to 20001 so it cannot terminate these equal-budget comparisons.
+The staged runtime policy separates recovery, monitoring and selection:
+
+| Operation | Schedule |
+|---|---|
+| Resumable `latest.pt` | Every 200 updates, monitoring-state commits, and stopping/interruption |
+| Fixed validation subset, supervised MSE + physics objectives | Every 1,000 updates |
+| Full validation, stages 1–5 | Exact stage endpoint |
+| Full validation, stage 6 | After stopping, at most four shortlisted updates |
+| Test | Once per final selected run, after all twelve selections are frozen |
+
+The shared subset is approximately 5% of validation windows (nearest integer,
+at least one): 12,533 of 250,658 windows. Sampling uses seed 1729 and proportional
+collection/robot/payload strata with largest-remainder allocation. It does not
+select the first batches. `monitor_subset.json` stores indices, seed, group counts,
+coverage and dataset fingerprint; its hash is recorded in the sweep manifest and
+checkpoint monitoring state. Every candidate and seed uses the same windows.
+Monitoring computes normalized supervised MSE and the short/long physics objectives,
+with the same masks, physics precision and valid-count weighting as evaluation,
+including partial batches. It logs per-channel physics losses, valid counts and
+the ramp-weighted physics/total objectives. **Only supervised MSE controls patience
+and selection**; physics remains diagnostic. Group, peak and lag diagnostics are
+reserved for full-validation reports.
 
 | Stage | Comparison | Total updates per candidate |
 |---|---|---:|
@@ -69,7 +89,7 @@ Patience is set to 20001 so it cannot terminate these equal-budget comparisons.
 | 3 | Pretraining/ramp updates 100/900, 500/1500, 300/1200 | 6,000 |
 | 4 | Short/long weights (1,1), (0.3,1), (1,3), (0.3,3) | 8,000 |
 | 5 | Eight local interactions described below | 10,000 |
-| 6 | Full, supervised-only, short-only, long-only × seeds 1,2,3 | 20,000 |
+| 6 | Full, supervised-only, short-only, long-only × seeds 1,2,3 | Up to 20,000 |
 
 Every configuration keeps `training.updates=20000`. Stage budgets use the
 trainer's absolute `max_updates` limit, preserving the 20,000-update scheduler
@@ -93,11 +113,39 @@ nearby settings replace duplicates. Generation rules, parent rankings and exact
 resolved configurations are saved. With sufficient time there are eight distinct
 candidates at 10,000 updates.
 
-Ranking uses the best full-validation `normalized_supervised_mse_all_heads`
-checkpoint within the common budget, regardless of training loss type. Ties use
-stable trial ID. Failed, short, partially validated or nonfinite results block
-promotion. Both best-validation and final-update checkpoints are archived for
-each stage; continuation always uses the latest optimizer trajectory.
+Stages 1–5 disable early stopping and rank the full-validation
+`normalized_supervised_mse_all_heads` score of the **exact endpoint checkpoint**.
+Historical best and subset scores never promote a search candidate. Ties use
+stable trial ID. Incomplete endpoints or nonfinite/partial validation block
+promotion. The endpoint checkpoint, report and selection record are archived;
+continuation restores its latest optimizer trajectory.
+
+Stage 6 starts fresh monitoring/patience state on first entry, at the current
+resumed update. Checks from earlier stages do not count. Patience is three
+non-improving eligible monitoring checks, using the existing `min_delta`.
+Eligibility starts at `pretrain_updates + ramp_updates`, identically for all
+ablations. The first eligible check establishes the patience baseline. The
+maximum remains 20,000 updates. Parameter identity and the optimizer/LR schedule
+are unchanged by this runtime policy.
+
+Retain the three lowest finite **raw** monitoring scores, regardless of
+`min_delta`, breaking ties by earlier update. Add the stopping checkpoint and
+deduplicate by update. After maximum-update or valid patience completion, evaluate
+all retained checkpoints on full validation and choose the lowest full MSE,
+breaking ties by earlier update. `selection.json` records stopping reason/update,
+selected update, checkpoint hashes, subset coverage and full-validation score.
+Deadline/interruption cannot qualify as patience completion.
+
+Monitoring state, patience baseline/stale count and shortlist hashes are embedded
+in resumable `latest.pt`, separately from training configuration equality.
+Superseded shortlist files are removed only after the new latest checkpoint is
+committed. Recovery does not retain every 200-update snapshot. Completed full
+validation passes are cached by checkpoint/subset identity and reused if selection
+is interrupted; selection/report writes and selected-checkpoint replacement are
+atomic. Keep latest, shortlist, selected best and stage archives when moving runs.
+Standalone and legacy training retain their existing validation/patience behavior.
+As before, coordinator resume requires the same package source fingerprint; old
+sweep results are not silently reinterpreted under the new selection policy.
 
 Stage 6 freezes the chosen settings and changes only seed and ablation weights:
 full retains both, supervised-only zeros both, short-only zeros long, and long-only
@@ -133,7 +181,13 @@ measurements do not automatically change the baseline's zero-loader-worker
 configuration or invalidate checkpoints.
 
 Forecasts use the slowest measured concurrent worker, full validation duration,
-startup/checkpoint overhead, per-device scheduling waves and a 25% time margin.
+startup overhead, 200-update recovery writes and monitoring snapshot writes,
+per-device scheduling waves and a 25% time margin. Subset-check cost is conservatively
+estimated at 5% of the measured detailed full-validation pass; it is not an
+independent throughput measurement. Forecasts separately count subset checks,
+one endpoint pass per search candidate, up to four shortlist passes per final run,
+and twelve test passes. Final-stage reserves assume the maximum 20,000 updates,
+without relying on early stopping to fit the budget.
 Known completed updates are deducted for current-stage continuations; unknown
 future candidates are conservatively costed as fresh runs. Final confirmation,
 all twelve test evaluations, and at least **1800 seconds for shutdown/reporting**
@@ -142,8 +196,8 @@ not a guarantee that a particular allocation completes the search in 48 hours.
 
 If needed, optional stage-5 alternatives are removed in reverse generation order,
 with every adjustment recorded. Retained candidates still run to 10,000 updates.
-If mandatory work cannot fit, the run stops as incomplete. Final runs are never
-silently shortened. Each stage also has an execution deadline that preserves
+If mandatory work cannot fit, the run stops as incomplete. Final runs stop only at their maximum or the declared patience rule; budget
+termination remains incomplete. Each stage also has an execution deadline that preserves
 its forecast reserve. SIGTERM/SIGINT stops dispatch and requests checkpointed
 worker exits. Unresponsive children are killed after a bounded 300-second grace;
 the last atomic checkpoint remains recoverable. Interrupted stages cannot promote.
@@ -182,6 +236,7 @@ staged_48h/
   staged_sweep.json          # Original deadline, baseline/code/runtime/data hashes
   state.json                # Candidate registry, parents, rankings, attempts, resources
   verification.json         # Trusted local prepared-data verification receipt
+  monitor_subset.json       # Shared fixed stratified validation indices
   baseline.json
   data_manifest.json
   probe_*/                  # Per-device startup/memory probes
@@ -192,7 +247,10 @@ staged_48h/
   trials/t000/
     resolved.json
     console/0001_1.log
-    1/{best,latest}.pt       # Stage archives; more stages appear on continuation
+    1/{best,latest}.pt       # Both identify the exact search endpoint
+    1/selection.json        # Endpoint score, hashes and completion reason
+    6/validation-*.json     # Cached full-validation shortlist reports
+    6/selection.json        # Final full-validation selection
     1_best_validation.json
     test.json               # Only final selected runs
     run/{latest.pt,best.pt,metrics.jsonl,profile.json,tensorboard/,...}
@@ -240,7 +298,9 @@ bitwise checkpoint/optimizer parity against ordinary sample collation, exact res
 dependent inheritance/deduplication, equal-budget promotion, matched seeds,
 resource caps, wave arithmetic, deadline preservation, and the test-selection gate.
 A tiny CPU integration test exercises the full six-stage lifecycle, twelve final
-selections, test reports and completed-run resume with reduced test-only budgets.
+selections, test reports and completed-run resume with reduced test-only budgets. Focused monitoring tests
+check subset reuse, agreement with the existing evaluator, final patience state
+across resume, shortlist selection and reuse of completed full-validation passes.
 The existing sweep/benchmark tests exercise subprocess failures, barriers, signals
 and cleanup. No production sweep is required:
 
@@ -257,3 +317,11 @@ throughput on Unity. See [performance verification](performance_verification.md)
 for training parity, timings and regression results. Twelve-process GPU capacity,
 MIG telemetry, long-run memory behavior and 48-hour completion require measurements
 inside the target allocation; they have not been established by CPU tests.
+
+Focused schedule-policy verification (2026-11-06): 27 directly affected staged,
+legacy-sweep and trainer-hook tests passed. The subset test matches both supervised
+MSE and short/long physics losses/counts against the existing evaluator on identical
+windows. The tiny CPU lifecycle covers endpoint promotion, final patience,
+shortlist selection, persisted resume state, cached full-validation reuse and the
+frozen test gate. Bash syntax and diff-whitespace checks passed. No GPU benchmark
+or production sweep was run; production timing and GPU behavior remain unverified.

@@ -247,7 +247,10 @@ The reference snapshot is needed only by the optional comparison tool; [provenan
 
 The [staged sweep](docs/staged_sweeps.md) searches loss, learning rate,
 physics activation and weights, then runs four matched-seed ablations and freezes
-all twelve checkpoint selections before test evaluation. Use
+all twelve checkpoint selections before test evaluation. Recovery checkpoints run every
+200 updates; fixed 5% validation monitoring runs every 1,000. Search stages rank
+exact endpoint full validation; final runs use patience 3 after the physics ramp
+and select from up to four fully validated shortlist checkpoints. Use
 `scripts/launch_staged_sweep_unity.sh` inside an existing allocation. It supports
 up to twelve independent processes, measures actual concurrent throughput, checks
 CPU/RAM/GPU capacity, and preserves its original deadline on resume. Add `--dry-run`

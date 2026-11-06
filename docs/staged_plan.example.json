@@ -1,6 +1,17 @@
 {
   "dependent_generation": "Only stage 1 resolved until predecessor completes",
-  "ranking": "full-validation normalized supervised MSE, then stable trial ID",
+  "final_patience": 3,
+  "final_patience_eligibility": "pretrain_updates + ramp_updates",
+  "final_shortlist": "three lowest raw subset scores plus stopping update, deduplicated",
+  "monitor_every": 1000,
+  "monitor_fraction": 0.05,
+  "monitoring_objectives": [
+    "normalized_supervised_mse",
+    "short_physics",
+    "long_physics"
+  ],
+  "ranking": "stages 1-5: exact endpoint full-validation MSE; stage 6: shortlist full-validation MSE; ties by stable ID/update",
+  "recovery_every": 200,
   "refinement_rule": "geometric midpoint to nearest tested LR; geometric midpoint to runner-up weights; stable Cartesian dedup substitution",
   "schedule_horizon": 20000,
   "seeds": [

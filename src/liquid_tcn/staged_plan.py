@@ -27,7 +27,15 @@ def rank(ids, state, stage):
     for trial in ids:
         row = state['trials'][trial]['stages'].get(stage, {})
         result = row.get('result') or {}
-        if (row.get('status') != 'complete' or result.get('update') != BUDGETS[stage]
+        endpoint = result.get('update') == BUDGETS[stage]
+        patience = (stage=='6' and result.get('stopping_reason')=='patience'
+                    and 0 < result.get('update',0) < BUDGETS[stage]
+                    and result.get('monitoring',{}).get('stale',0)>=3
+                    and result['update']>=result['monitoring']['eligibility_update'])
+        if (row.get('status') != 'complete' or not (endpoint or patience)
+                or not result.get('selection_complete')
+                or result.get('scope') != ('shortlist_full' if stage=='6' else 'stage_endpoint')
+                or (stage!='6' and result.get('best_update')!=BUDGETS[stage])
                 or not math.isfinite(result.get('normalized_mse', float('nan')))):
             raise ValueError(f'Incomplete equal-budget comparison: {stage}/{trial}')
         results.append((result['normalized_mse'], trial))
@@ -98,6 +106,10 @@ def candidates(stage, baseline, history):
 
 def plan():
     return dict(stages=[dict(stage=s, name=n, candidates=c, absolute_updates=BUDGETS[s]) for s,n,c in STAGES],
-                schedule_horizon=20000, seeds=list(SEEDS), ranking='full-validation normalized supervised MSE, then stable trial ID',
+                schedule_horizon=20000, seeds=list(SEEDS), ranking='stages 1-5: exact endpoint full-validation MSE; stage 6: shortlist full-validation MSE; ties by stable ID/update',
+                recovery_every=200,monitor_every=1000,monitor_fraction=.05,
+                monitoring_objectives=["normalized_supervised_mse","short_physics","long_physics"],
+                final_patience=3,final_patience_eligibility='pretrain_updates + ramp_updates',
+                final_shortlist='three lowest raw subset scores plus stopping update, deduplicated',
                 refinement_rule='geometric midpoint to nearest tested LR; geometric midpoint to runner-up weights; stable Cartesian dedup substitution',
                 dependent_generation='Only stage 1 resolved until predecessor completes', test_gate='all 12 final best checkpoints frozen')

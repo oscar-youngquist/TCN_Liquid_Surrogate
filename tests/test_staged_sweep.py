@@ -57,7 +57,7 @@ def test_refinement_at_both_lr_boundaries(tmp_path):
 
 
 def test_promotion_requires_equal_complete_budgets():
-    state={'trials':{t:{'stages':{'1':dict(status='complete',result=dict(update=3000,normalized_mse=1.))}} for t in ['b','a']}}
+    state={'trials':{t:{'stages':{'1':dict(status='complete',result=dict(update=3000,best_update=3000,normalized_mse=1.,selection_complete=True,scope='stage_endpoint'))}} for t in ['b','a']}}
     assert rank(['b','a'],state,'1')==['a','b']
     state['trials']['a']['stages']['1']['result']['update']=2999
     with pytest.raises(ValueError,match='Incomplete'):rank(['a','b'],state,'1')
@@ -92,7 +92,7 @@ def test_deadline_and_capacity():
     assert capacity(12,2,dict(cpus=40,available_ram_bytes=100*1024**2),{'cuda:0':worker})=={'cuda:0':6}
     w=dict(training=dict(seconds=10,updates=10),validation=dict(seconds=20),startup_including_initial_checkpoint_seconds=2,checkpoint_seconds=1)
     f=forecast([('cpu',1000,1)]*3,{'cpu':2},{'workers':[w]*2},100,100)
-    assert f['training_seconds']==2*(3+1000+20+2)*1.25
+    assert f['training_seconds']==2*(3+1000+20+5)*1.25
     assert f['shutdown_reporting_seconds']==1800
 
 
@@ -144,7 +144,19 @@ def test_tiny_cpu_staged_lifecycle_and_resume(tmp_path, monkeypatch):
     cfg['training'].update(batch_size=2,validation_every=1,checkpoint_every=1,device='cpu',threads=1,
                            pretrain_updates=0,ramp_updates=1,validation_batch_size=16)
     monkeypatch.setattr(sweep,'generate_trials',lambda *args:{'00':copy.deepcopy(cfg)})
-    for n in range(1,7):monkeypatch.setitem(BUDGETS,str(n),n)
+    import liquid_tcn.staged_validation as validation_policy
+    monkeypatch.setattr(validation_policy,'MONITOR_EVERY',1)
+    monkeypatch.setattr(validation_policy,'RECOVERY_EVERY',2)
+    cfg['training']['min_delta']=1e9
+    original_candidates=sweep.candidates
+    def tiny_candidates(stage,base,history):
+        values=original_candidates(stage,base,history)
+        if stage=='3':
+            for (_,config),(pretrain,ramp) in zip(values,[(0,1),(1,1),(1,2)]):
+                config['training'].update(pretrain_updates=pretrain,ramp_updates=ramp)
+        return values
+    monkeypatch.setattr(sweep,'candidates',tiny_candidates)
+    for n in range(1,7):monkeypatch.setitem(BUDGETS,str(n),n if n<6 else 12)
     resources=dict(cpus=8,available_ram_bytes=2**30)
     monkeypatch.setattr(sweep,'available_resources',lambda:resources)
     worker=dict(peak_rss_kib=1024,memory={},training=dict(seconds=.001,updates=50),
@@ -172,6 +184,11 @@ def test_tiny_cpu_staged_lifecycle_and_resume(tmp_path, monkeypatch):
     frozen=json.loads((tmp_path/'sweep/final_selections.json').read_text())
     assert len(frozen['selections'])==12
     assert state['status']=='complete'
+    assert any(e['stopping_reason']=='patience' for e in frozen['selections'])
+    for e in frozen['selections']:
+        selected=state['trials'][e['trial']]['stages']['6']['result']
+        assert len(selected['evaluations'])<=4
+        assert selected['selected_update']<=selected['update']
     assert sweep.main(args+['--resume'])==0
     after=json.loads((tmp_path/'sweep/staged_sweep.json').read_text())
     deadline=after['deadline']
@@ -249,3 +266,55 @@ def test_device_slots_limit_independent_mock_workers(tmp_path):
         for _,delta in events:
             live+=delta
             assert live<=limit
+
+
+
+def test_fixed_subset_mse_and_policy_resume(tmp_path,monkeypatch):
+    from liquid_tcn.staged_validation import monitoring_subset,monitoring_mse,StageValidation
+    import liquid_tcn.staged_validation as policy_module
+    from liquid_tcn.evaluate import evaluate
+    from liquid_tcn.normalization import Normalization
+    from liquid_tcn.model import LiquidTCN,ModelConfig
+    from liquid_tcn.train import train
+    from liquid_tcn.checkpoint import load_checkpoint
+    data,manifest=preparation(tmp_path)
+    path=tmp_path/'subset.json'
+    subset=monitoring_subset(data,path)
+    assert monitoring_subset(data,path)==subset
+    assert subset['windows']==max(1,int(len(WindowDataset(data,'validation'))*.05+.5))
+    assert len(set(subset['indices']))==subset['windows']
+    ds=WindowDataset(data,'validation')
+    loader=make_loader(ds,batch_size=3,sampler=subset['indices'],pin_memory=False)
+    model=LiquidTCN(ModelConfig(**manifest['model']))
+    norm=Normalization(manifest['normalization'])
+    monitor=monitoring_mse(model,loader,norm,'cpu')
+    full=evaluate(model,loader,norm,'cpu')
+    assert monitor['selection_metric']==pytest.approx(full['selection_metric'],rel=1e-7)
+    for horizon in ('short','long'):
+        assert monitor['physics'][horizon]['loss']==pytest.approx(full['losses'][horizon],rel=1e-7)
+        assert monitor['physics'][horizon]['valid_count']==full['losses']['physics_counts'][horizon]
+    monkeypatch.setattr(policy_module,'MONITOR_EVERY',1)
+    monkeypatch.setattr(policy_module,'RECOVERY_EVERY',2)
+    config=dict(updates=12,pretrain_updates=0,ramp_updates=1,min_delta=1e9,patience=20001,
+                threads=1,device='cpu',batch_size=2,progress=False)
+    run=tmp_path/'trial/run'
+    first=StageValidation('6',12,path,time.time()+100)
+    train(data,run,config,max_updates=2,staged_policy=first)
+    saved=load_checkpoint(run/'latest.pt')
+    assert saved['stage_monitoring']['stale']==1
+    assert not (run.parent/'6/selection.json').exists()
+    second=StageValidation('6',12,path,time.time()+100)
+    train(data,run,config,resume=run/'latest.pt',staged_policy=second)
+    result=json.loads((run.parent/'6/selection.json').read_text())
+    assert result['stopping_reason']=='patience' and result['update']==4
+    assert result['monitoring']['entry_update']==0
+    assert len(result['monitoring']['checks'])==4
+    assert len(result['evaluations'])<=4
+    lowest=sorted(result['monitoring']['checks'],key=lambda r:(r['selection_metric'],r['update']))[:3]
+    assert [r['update'] for r in result['monitoring']['shortlist']]==[r['update'] for r in lowest]
+    hashes={p.name:p.read_bytes() for p in (run.parent/'6').glob('validation-*.json')}
+    # Resuming selection reuses full-validation reports, even if evaluation is unavailable.
+    monkeypatch.setattr(policy_module,'evaluate',lambda *a,**k:pytest.fail('re-evaluated cached checkpoint'))
+    third=StageValidation('6',12,path,time.time()+100)
+    train(data,run,config,resume=run/'latest.pt',staged_policy=third)
+    assert hashes=={p.name:p.read_bytes() for p in (run.parent/'6').glob('validation-*.json')}
