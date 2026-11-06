@@ -146,6 +146,18 @@ def test_checkpoint_exact_resume_and_evaluation(tmp_path, workers, strategy):
     assert records[0]['secondary']==0 and records[0]['projection']['projected']==0
     assert records[-1]['secondary'] > 0
     assert a['config']['gradient_strategy']==strategy
+    for record in records:
+        components = record['loss_components']
+        assert sum(v for k,v in components.items() if k.startswith('supervised_contribution/')) == pytest.approx(record['supervised'])
+        for horizon in ('short', 'long'):
+            assert sum(components[f'{horizon}/{c}'] for c in ('r','P','H')) == pytest.approx(record[horizon])
+            assert components[f'{horizon}_weighted'] == pytest.approx(record['lambda_'+horizon]*record[horizon])
+        assert components['short_weighted'] + components['long_weighted'] == pytest.approx(record['secondary'])
+    for key, value in records[-1]['loss_components'].items():
+        logged = events.Scalars('train/' + key)
+        assert [event.step for event in logged] == [1,2,3,4]
+        assert logged[-1].value == pytest.approx(value)
+
 
 
 def test_tiny_batch_overfit(tmp_path):

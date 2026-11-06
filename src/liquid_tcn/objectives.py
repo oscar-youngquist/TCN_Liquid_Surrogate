@@ -66,3 +66,27 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
         total = supervised_loss + secondary
     return dict(loss=total, secondary=secondary, supervised=supervised_loss, supervised_sums=sums, supervised_counts=counts,
                 physics=physics, physical=physical)
+
+
+def loss_components(result, lambda_short, lambda_long):
+    """Detached scalar losses for TensorBoard and JSON, before gradient projection.
+
+    Per-head means use each head's own valid scalar count. Contributions instead
+    use the shared denominator so they sum to the supervised objective even when
+    label coverage differs. Physics channels already sum to each horizon's loss.
+    """
+    from .model import HEADS
+
+    sums = result['supervised_sums'].detach().cpu().tolist()
+    counts = result['supervised_counts'].detach().cpu().tolist()
+    components = {}
+    for head, total, count in zip(HEADS, sums, counts):
+        components[f'supervised/{head}'] = total / (3 * count)
+        components[f'supervised_contribution/{head}'] = total / (3 * sum(counts))
+    for horizon, weight in (('short', lambda_short), ('long', lambda_long)):
+        values = result['physics'][horizon]['loss_by_channel'].detach().cpu().tolist()
+        for channel, value in zip(('r', 'P', 'H'), values):
+            components[f'{horizon}/{channel}'] = value
+            components[f'{horizon}_weighted/{channel}'] = weight * value
+        components[f'{horizon}_weighted'] = weight * sum(values)
+    return components

@@ -15,7 +15,7 @@ from tqdm.auto import tqdm
 from .model import LiquidTCN, ModelConfig
 from .normalization import Normalization
 from .dataset import WindowDataset, EpochSampler, make_loader, to_device, close_loader
-from .objectives import objective
+from .objectives import objective, loss_components
 from .gradients import backward_objectives
 from .evaluate import evaluate
 from .checkpoint import atomic_save, load_checkpoint, rng_state, restore_rng
@@ -217,7 +217,8 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     short_count=int(result['physics']['short']['count']), long_count=int(result['physics']['long']['count']),
                     supervised_counts=result['supervised_counts'].tolist(), lambda_short=short, lambda_long=long,
                     gradient_norm=float(grad), learning_rate=used_lr,
-                    secondary=float(result['secondary'].detach()), projection=projection)
+                    secondary=float(result['secondary'].detach()), projection=projection,
+                    loss_components=loss_components(result, short, long))
                 if update % config['validation_every'] == 0 or update == total_updates:
                     vstart = time.perf_counter()
                     last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'])
@@ -247,6 +248,8 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                             'gradient_norm', 'learning_rate', 'short_count', 'long_count'):
                     writer.add_scalar('train/' + key, record[key], update)
                 writer.add_scalar('train/secondary', record['secondary'], update)
+                for key, value in record['loss_components'].items():
+                    writer.add_scalar('train/' + key, value, update)
                 for key, value in projection.items():
                     writer.add_scalar('train/pcgrad/' + key, value, update)
                 for head, count in zip(('force', 'moment', 'r_B', 'v_B', 'S_B'), record['supervised_counts']):

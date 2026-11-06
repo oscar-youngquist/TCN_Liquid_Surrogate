@@ -128,7 +128,10 @@ precision.json           startup FP32/float64 and optional AMP checks
 profile.json             loader/training time and peak process/device memory
 ```
 
-TensorBoard logs training losses/weights/counts, PCGrad projection decisions and shared-gradient diagnostics, clipping, learning rate, and per-head validation errors and normalized conservation residuals. Checkpoint writes flush the event writer; resume purges events beyond the restored update and continues the same step numbering.
+TensorBoard logs training losses/weights/counts, PCGrad projection decisions and shared-gradient diagnostics, clipping, learning rate, and per-head validation errors and normalized conservation residuals. Individual supervised losses for all five heads and physics losses for each
+`r`, `P`, and `H` equation are logged every update, including weighted
+contributions. See [individual loss tags](docs/configuration.md#individual-training-losses)
+for their names and aggregation rules. Checkpoint writes flush the event writer; resume purges events beyond the restored update and continues the same step numbering.
 
 ```bash
 tensorboard --logdir runs

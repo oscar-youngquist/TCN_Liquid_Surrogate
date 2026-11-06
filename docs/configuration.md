@@ -168,3 +168,34 @@ with the training configuration, so resume checks enforce the same behavior.
 Checkpoints created before these fields existed are interpreted as `"sum"` with
 `pcgrad_eps=1e-12`; select those values to resume them. Resuming such a checkpoint
 with `"pcgrad"` is rejected rather than silently changing the training rule.
+
+## Individual training losses
+
+Every optimizer update logs the following scalars to TensorBoard. The same values
+are stored under `loss_components` in each `metrics.jsonl` record, using the tag
+without its `train/` prefix.
+
+| TensorBoard tag | Meaning |
+|---|---|
+| `train/supervised/{head}` | Mean normalized MSE or Huber loss for that head, divided by its own valid scalar count |
+| `train/supervised_contribution/{head}` | Head's contribution to the aggregate supervised loss, using the total valid scalar count across all heads |
+| `train/short/{channel}` | Unweighted normalized physics loss for an adjacent interval equation |
+| `train/long/{channel}` | Unweighted normalized physics loss for a whole-window equation |
+| `train/short_weighted/{channel}` | Short equation loss multiplied by the current ramped short lambda |
+| `train/long_weighted/{channel}` | Long equation loss multiplied by the current ramped long lambda |
+| `train/short_weighted`, `train/long_weighted` | Weighted totals for each physics horizon |
+
+Heads are `force`, `moment`, `r_B`, `v_B`, and `S_B`. Physics channels are `r`
+(position consistency), `P` (linear momentum), and `H` (angular momentum). Physics
+losses are mean squared normalized vector norms; supervised head losses are means
+over valid scalar coordinates. The supervised choice (`mse` or `huber`) applies
+to the head logs as well as their aggregate.
+
+The five `supervised_contribution` values sum to `train/supervised`; the per-head
+means generally do not. Each horizon's three unweighted channels sum to its
+existing `train/short` or `train/long` total. Weighted channels sum to their
+weighted horizon total, and both weighted horizon totals sum to `train/secondary`.
+Adding `train/supervised` gives `train/loss`. Raw physics channels remain visible
+when their weights are zero. These are objective values before PCGrad; projection
+changes gradients, not the loss values. Validation metrics retain their existing
+per-head error and per-equation residual tags.
