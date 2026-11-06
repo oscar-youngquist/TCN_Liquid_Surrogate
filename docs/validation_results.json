@@ -564,5 +564,118 @@
     "source_function_ast_equivalent": true,
     "recorded_training_performed": false,
     "historical_smoke_gradient_strategy": "sum"
+  },
+  "parallel_preprocessing": {
+    "tests": {
+      "passed": 66,
+      "seconds": 14.53
+    },
+    "fixture": {
+      "attempts": 4,
+      "samples_per_attempt": 1000,
+      "environments": 2,
+      "grid_endpoints": 8000,
+      "shard_rows": 256
+    },
+    "baseline_seconds": 2.870923626003787,
+    "runs": [
+      {
+        "attempts": [
+          {
+            "peak_rss_kib": 451680,
+            "seconds": 0.6340454880264588
+          },
+          {
+            "peak_rss_kib": 451680,
+            "seconds": 0.5673793659952935
+          },
+          {
+            "peak_rss_kib": 451680,
+            "seconds": 0.6367989289865363
+          },
+          {
+            "peak_rss_kib": 451680,
+            "seconds": 0.5796066850016359
+          }
+        ],
+        "grid_endpoints_per_second": 3306.7736867284784,
+        "num_workers": 0,
+        "peak_rss_kib": 452192,
+        "peak_worker_rss_kib": 451680,
+        "processing_seconds": 2.4192765389743727,
+        "seconds": 2.437297878001118,
+        "workers": 0
+      },
+      {
+        "attempts": [
+          {
+            "peak_rss_kib": 452564,
+            "seconds": 0.5842674869927578
+          },
+          {
+            "peak_rss_kib": 452192,
+            "seconds": 0.6229819479922298
+          },
+          {
+            "peak_rss_kib": 452564,
+            "seconds": 0.6350678660091944
+          },
+          {
+            "peak_rss_kib": 452192,
+            "seconds": 0.6126934869971592
+          }
+        ],
+        "grid_endpoints_per_second": 3507.195852931027,
+        "num_workers": 2,
+        "peak_rss_kib": 452704,
+        "peak_worker_rss_kib": 452564,
+        "processing_seconds": 2.2810245949949604,
+        "seconds": 2.3034124560072087,
+        "workers": 2
+      },
+      {
+        "attempts": [
+          {
+            "peak_rss_kib": 453216,
+            "seconds": 0.7037469409988262
+          },
+          {
+            "peak_rss_kib": 453216,
+            "seconds": 0.6369352239998989
+          },
+          {
+            "peak_rss_kib": 453216,
+            "seconds": 0.5648011729936115
+          },
+          {
+            "peak_rss_kib": 453216,
+            "seconds": 0.5664687639800832
+          }
+        ],
+        "grid_endpoints_per_second": 4312.288201170199,
+        "num_workers": 4,
+        "peak_rss_kib": 453216,
+        "peak_worker_rss_kib": 453216,
+        "processing_seconds": 1.8551635759940837,
+        "seconds": 1.8768043080053758,
+        "workers": 4
+      }
+    ],
+    "identical_to_baseline": true,
+    "million_timestep_benchmark_performed": false
+  },
+  "validation_optimization": {
+    "windows": 712,
+    "batch_size": 128,
+    "seconds": {
+      "before": 0.5520063000149094,
+      "after": 0.18461463000858203
+    },
+    "metrics_match": true,
+    "test_suite_passed": 75,
+    "test_suite_seconds": 20.52,
+    "device": "cpu",
+    "fixture": "Synthetic 712-window dataset with varying wrench labels; 8-channel TCN; 41 endpoints; 128-window batches",
+    "full_collection_or_gpu_profile": false
   }
 }

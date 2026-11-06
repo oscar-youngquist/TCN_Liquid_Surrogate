@@ -138,3 +138,48 @@ update gradients as well as scalar losses.
 The recorded-data smoke results earlier in this document used ordinary summed
 gradients before PCGrad was added. They do not measure PCGrad convergence or
 accuracy. No new recorded-data or full training run was performed for this change.
+
+## Parallel preprocessing
+
+The full suite passed **66 tests in 14.53 seconds** after adding preprocessing
+progress and parallel workers. New tests compare serial/two-worker artifact hashes,
+normalization, splits, counters, episode identities, and cross-shard loading with
+asynchronous resets. They also check disabled progress, invalid worker settings,
+and worker failures leaving no completed manifest.
+
+A CPU fixture with four attempts, 1,000 recorded samples per attempt, two
+environments, and 256-row shards produced 8,000 grid endpoints. Timings include
+verification, preparation, normalization, and output hashing; multiprocessing
+runs include spawn/startup costs:
+
+| Version | Processes | Elapsed seconds |
+|---|---:|---:|
+| Previous implementation | Main process | 2.87 |
+| Optimized implementation | Main process | 2.44 |
+| Optimized implementation | 2 workers | 2.30 |
+| Optimized implementation | 4 workers | 1.88 |
+
+All four outputs had identical shard/index hashes, source identities, normalization,
+counts, and series metadata. Peak individual process RSS was about 443 MiB,
+including imported libraries; this is not total memory across workers. The small
+fixture emphasizes startup costs and is not a million-timestep scaling benchmark.
+No complete collection campaign was processed for this change. Measure the actual
+collection and filesystem with `tools/profile_prepare.py` before choosing a worker
+count; small datasets or bandwidth-limited disks may be faster in serial mode.
+
+## Validation metric optimization and loss logging
+
+The suite passed **75 tests in 20.52 seconds** after vectorizing wrench peak/lag
+metrics, reusing batch data for group reports, and adding validation losses.
+Tests cover lag and peak equivalence, constant/masked signals, MSE and Huber,
+unequal label coverage, partial final batches, TensorBoard loss tags, and resume
+compatibility with checkpoints lacking separate validation loader settings.
+
+On a CPU synthetic dataset of 712 validation windows with varying wrench labels,
+41 endpoints per window, an 8-channel model, and batch size 128, the complete
+validation pass decreased from **0.552 s to 0.185 s** (about 3×). Both versions
+were run after warmup without profiler instrumentation. Existing report values
+matched within `1e-10` absolute/relative tolerance. A separate profile identified
+repeated per-window lag/peak analysis as the dominant previous cost. No full
+collection or GPU speedup was measured; real throughput also depends on the
+network, storage, batch size, and loader workers.

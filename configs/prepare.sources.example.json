@@ -37,5 +37,7 @@
     0.1,
     0.1
   ],
-  "held_out_payloads": []
+  "held_out_payloads": [],
+  "num_workers": 4,
+  "progress": true
 }

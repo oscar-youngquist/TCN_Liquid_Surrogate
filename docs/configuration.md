@@ -9,7 +9,7 @@ All paths in CLI/JSON commands resolve relative to the current working directory
 | Key | Default/example | Meaning |
 |---|---|---|
 | `data` | `data/prepared` | Completed prepared dataset directory containing `manifest.json`; source NPZ files are not read during training. |
-| `output` | `runs/combined/{timestamp}` | Run log directory. `{timestamp}` expands to a UTC timestamp. Contains selected/resolved configs, best/latest checkpoints, TensorBoard, metrics and profiles. |
+| `output` | `runs/combined/{timestamp}` | Run log directory. `{timestamp}` expands to `YYYY_MM_DD_HH_MM_SS_ffffffZ` (UTC, with microseconds). Contains selected/resolved configs, best/latest checkpoints, TensorBoard, metrics and profiles. |
 | `resume` | `null` | Trusted checkpoint path to restore, usually an existing run's `latest.pt`. Set `output` to that same concrete run directory to continue its logs. |
 | `max_updates` | `null` | Optional absolute stop update for a short/interrupted run, without changing the scheduler horizon or checkpoint configuration. Resume with this removed or increased. It does not mean “additional updates.” |
 | `model` | object below | Architecture and window geometry; must match the prepared dataset's model section. |
@@ -96,6 +96,8 @@ Each worker lazily opens its own mappings. Data are copied only for the requeste
 | `training` key | Default | Meaning |
 |---|---:|---|
 | `validation_every` | 250 | Validate every this many optimizer updates, and at the configured final update. |
+| `validation_batch_size` | `null` | Validation windows per batch; null inherits training `batch_size`. Increase if inference memory allows. |
+| `validation_num_workers` | `null` | Validation DataLoader workers; null inherits training `num_workers`. Uses the configured prefetching and pinned memory settings. |
 | `validation_batches` | `null` | Null evaluates the complete validation split. A positive value uses the same fixed initial batches every time; useful for smoke tests, with coverage reported. |
 | `checkpoint_every` | 250 | Atomic latest-checkpoint interval. Latest is also saved when the requested run finishes/stops. Best is saved on validation improvement. |
 | `patience` | 20 | Stop after this many validation events without sufficient improvement. |
@@ -119,6 +121,8 @@ liquid-tcn prepare --config configs/prepare.local.json --output data/prepared
 
 | Key | Default/example | Meaning |
 |---|---|---|
+| `num_workers` | 0 | Independent attempt-processing processes; zero runs in the main process. Also bounds concurrent verification/output-hash threads. Example files use 4. CLI override: `--workers`. |
+| `progress` | true | Show stage progress and active grid-bin counts. CLI `--no-progress` disables all preparation bars. |
 | `collection_root` | `/data/liquid_collection/campaign` | Recursively discover completed attempts under this directory. Supports a campaign folder, its parent containing multiple campaigns, or one attempt. Mutually exclusive with a nonempty `sources` list. |
 | `sources` | list (manual mode only) | Explicit attempt directories and group/split identities, defined below. Used instead of `collection_root`. |
 | `seed` | 1 | Seed used by deterministic whole-group hash splitting. |
@@ -199,3 +203,88 @@ Adding `train/supervised` gives `train/loss`. Raw physics channels remain visibl
 when their weights are zero. These are objective values before PCGrad; projection
 changes gradients, not the loss values. Validation metrics retain their existing
 per-head error and per-equation residual tags.
+
+## Preprocessing throughput and memory
+
+Parallelism is across attempts. Each attempt retains sequential stream ordering,
+per-environment resets, split intervals, and complete-history checks. Whole-group
+splitting still happens before processing. Workers stage shards under
+`.prepare-work`; the parent assigns series IDs in source order, renames shards
+without copying their contents, and remaps compact indices in bounded blocks.
+At most one attempt per worker is submitted at a time. Waiting for an earlier
+source can leave some workers idle; this bounds staging and keeps output ordering
+deterministic. A single attempt does not use multiple processing workers.
+
+Checksum verification and final output hashing use bounded thread queues when
+workers are enabled. Source chunks are checked again as they are read. Normalization
+is reduced in a fixed serial order, preserving identical statistics across worker
+counts. The manifest is written only after all processing and verification succeeds.
+Failures leave an incomplete output directory, potentially including staging files;
+use a fresh output directory for a retry. Worker errors trigger cancellation of
+other active attempts at their next grid-bin boundary.
+
+The processing bar counts completed attempts and shows bins processed by active
+attempts. Serial processing also shows a grid-bin bar. Bins are 5 ms grid intervals,
+not raw rows or individual environment endpoints. Stages without a known total show
+counts and elapsed time rather than an estimated completion percentage.
+
+`manifest.json.profile` includes total and processing seconds, per-attempt elapsed
+time/RSS, main-process peak RSS, maximum individual-worker peak RSS, and processed
+grid endpoints per second. RSS is a process lifetime high-water mark (KiB on Linux),
+not a sum across workers. Memory grows with workers and simultaneous environments;
+a process also imports PyTorch even though preprocessing runs on CPU. Start with
+2–4 workers, then measure the actual storage system and collection.
+
+`tools/profile_prepare.py` prepares the configured dataset once per worker count
+and compares source identities, artifact hashes, window counts, series metadata,
+and normalization. It writes a fresh dataset directory for each run. Use a fixed
+explicit source list when benchmarking an actively growing collection.
+
+## Terminal progress layout
+
+Training displays update progress on the first row and wraps `phase`, `loss`,
+`sup`, `short`, `long`, `lr`, and `val` onto separate rows as needed. Width is
+checked on each update, so terminal resizing takes effect without restarting.
+Below 65 columns the header omits elapsed time and update rate; below 40 columns
+it shows only percentage and update counts. Metric values remain on the rows
+below the header. Metrics redraw at most five times per second. Set
+`training.progress=false` to disable the display, including for redirected logs
+that do not support terminal cursor movement.
+
+## Validation losses and performance
+
+Validation retains full coverage by default. Peak and lag calculations are
+vectorized over windows and wrench heads, and their results are reused in
+per-robot/payload reports. Batch predictions and physics residuals are transferred
+to CPU once for those reports. Ground-truth evaluation computes conservation
+floors without repeating peak/lag analysis against itself.
+
+TensorBoard records `validation/loss`, `validation/supervised`, `validation/short`,
+`validation/long`, and `validation/secondary`, plus the current `lambda_short` and
+`lambda_long`. Individual values use the same suffixes as training:
+
+- `validation/supervised/{head}` and `validation/supervised_contribution/{head}`
+- `validation/short/{r,P,H}` and `validation/long/{r,P,H}`
+- `validation/short_weighted/{r,P,H}` and `validation/long_weighted/{r,P,H}`
+- `validation/short_weighted` and `validation/long_weighted`
+
+The `losses` object in `validation.json` includes these values, validity counts,
+and supervision kind. Supervised losses use the configured MSE or Huber objective;
+physics contributions use the weights from the most recent training update.
+Standalone checkpoint evaluation uses that checkpoint's last-update weights.
+Numerators and counts are accumulated across the whole evaluated set before
+forming losses, so partial batches and unequal label coverage are weighted
+correctly. Empty evaluations have `losses: null`. Physical-unit error and
+conservation metrics remain available under their existing names.
+
+`validation/selection_metric` remains normalized supervised MSE, including when
+training uses Huber. Weighted validation loss changes during the physics ramp
+and is not used for checkpoint selection.
+
+For a new run, `validation_batch_size` can be larger than the training batch size
+because validation does not retain gradients. Tune it to available GPU memory.
+Try validation workers when loading is a bottleneck; worker overhead can hurt
+small cached datasets. `validation_batches` reduces evaluation coverage, while
+`validation_every` changes frequency; neither speeds up the same complete pass.
+Resume still requires matching settings. Older checkpoints without the new loader
+fields inherit their original training batch size and worker count via null defaults.

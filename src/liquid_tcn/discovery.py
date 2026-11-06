@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from tqdm.auto import tqdm
+from .parallel import ordered_io_map
 from .metadata import read_metadata
 
 
@@ -26,7 +28,7 @@ def collection_group(metadata):
     return 'collection-' + hashlib.sha256(encoded).hexdigest()
 
 
-def discover_sources(root, verify, exclude=()):
+def discover_sources(root, verify, exclude=(), progress=False, io_workers=0):
     """Return verified sources and an auditable scan report.
 
     Missing/non-complete manifests are expected during live collection. A corrupt
@@ -45,7 +47,8 @@ def discover_sources(root, verify, exclude=()):
     candidates = []
     def walk_error(error):
         raise error  # Never silently omit an unreadable subtree.
-    for directory, children, files in os.walk(root, topdown=True, followlinks=False, onerror=walk_error):
+    for directory, children, files in tqdm(os.walk(root, topdown=True, followlinks=False, onerror=walk_error),
+                                            desc='Scanning collection', unit='directory', disable=not progress):
         path = Path(directory)
         children[:] = sorted(c for c in children if (path / c).resolve() not in excluded
                              and not (path / c).is_symlink())
@@ -68,21 +71,25 @@ def discover_sources(root, verify, exclude=()):
         except (OSError, ValueError, AttributeError) as exc:
             report['errors'].append(dict(path=str(path), reason=str(exc)))
     sources = []
-    for path in sorted(candidates):
+    def verify_candidate(path):
         try:
             # Missing auxiliary completion markers are still unfinished. Hash or
             # schema errors in a claimed-complete recording must fail preparation.
             hashes = verify(path)
             metadata = read_metadata(path)
             group = collection_group(metadata)
-            sources.append(dict(path=str(path), group=group, payload_id=metadata['payload_id'],
-                                robot=metadata['robot'], hashes=hashes, metadata=metadata))
-            report['included'].append(dict(path=str(path), group=group,
-                                           payload_id=metadata['payload_id'], robot=metadata['robot']))
+            source = dict(path=str(path), group=group, payload_id=metadata['payload_id'],
+                          robot=metadata['robot'], hashes=hashes, metadata=metadata)
+            return 'included', {k: source[k] for k in ('path','group','payload_id','robot')}, source
         except IncompleteAttemptError:
-            report['skipped'].append(dict(path=str(path), reason='incomplete_auxiliary_stream', status='unfinished'))
+            return 'skipped', dict(path=str(path), reason='incomplete_auxiliary_stream', status='unfinished'), None
         except (ValueError, OSError, KeyError, TypeError, AttributeError) as exc:
-            report['errors'].append(dict(path=str(path), reason=str(exc)))
+            return 'errors', dict(path=str(path), reason=str(exc)), None
+    for kind, entry, source in tqdm(ordered_io_map(verify_candidate, sorted(candidates), io_workers),
+            total=len(candidates), desc='Verifying attempts', unit='attempt', disable=not progress):
+        report[kind].append(entry)
+        if source is not None:
+            sources.append(source)
     report['finished_utc'] = datetime.now(timezone.utc).isoformat()
     report['counts'] = {key: len(report[key]) for key in ('included', 'skipped', 'errors')}
     report['counts']['groups'] = len({s['group'] for s in sources})

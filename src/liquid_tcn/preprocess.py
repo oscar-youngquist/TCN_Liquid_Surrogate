@@ -7,6 +7,12 @@ import os
 from pathlib import Path
 import time
 import resource
+from concurrent.futures import ProcessPoolExecutor, wait
+import multiprocessing
+import shutil
+import struct
+from .parallel import ordered_io_map
+from tqdm.auto import tqdm
 import numpy as np
 from .ported.audit import stream_rows
 from .ported.storage import verified_complete, digest, atomic_json
@@ -26,6 +32,14 @@ ROW_DTYPE = np.dtype([
     ('episode_id', '<i8'), ('tick', '<i8'), ('state_valid', '?'),
     ('interval_valid', '?'), ('history_valid', '?'), ('h', '<f8')])
 INDEX_DTYPE = np.dtype([('series', '<i8'), ('end', '<i8')])
+INDEX_PACK = struct.Struct('<qq')
+_STOP_EVENT = None
+
+
+def _mass_matches(value, reference, rtol=1e-7, atol=1e-9):
+    # Scalar specialization of NumPy isclose's asymmetric tolerance. Call sites
+    # separately require finite positive mass, so no NaN/Inf equality is needed.
+    return abs(value - reference) <= atol + rtol * abs(reference)
 
 
 def verify_attempt(path):
@@ -33,12 +47,14 @@ def verify_attempt(path):
     path = Path(path)
     if not verified_complete(path):
         raise IncompleteAttemptError(f'Incomplete attempt: {path}')
+    # Root verification already checks its declared auxiliary streams recursively.
+    declared = json.loads((path / 'result.json').read_text()).get('auxiliary_streams', [])
     identities = {}
     for sub in ('', 'events', 'boundaries'):
         root = path / sub
         if not root.exists():
             continue
-        if not verified_complete(root):
+        if sub and sub not in declared and not verified_complete(root):
             raise IncompleteAttemptError(f'Incomplete stream: {root}')
         result = json.loads((root / 'result.json').read_text())
         if (root / 'chunks.json').exists():
@@ -129,7 +145,7 @@ def endpoint_row(state, interval, native_mode=False):
                 force = part['coupling_force_impulse_W']
                 moment = part['coupling_moment_impulse_world_origin_W'] - np.cross(anchor, force)
             else:
-                rot = rotation(s)
+                rot = R if s is state else rotation(s)
                 force = part['h'] * (rot @ part['force_interval_average_B'])
                 moment = part['h'] * (rot @ part['moment_interval_average_O_B']) + np.cross(s['x_O_W'] - anchor, force)
             IF += force
@@ -163,9 +179,9 @@ class SeriesWriter:
             if self.mass is None:
                 self.mass, self.gravity = float(row['mass']), row['gravity_W'].copy()
             self.assumptions_valid &= (row['mass'] > 0 and np.linalg.norm(row['gravity_W']) > 0 and
-                np.isclose(row['mass'], self.mass, rtol=1e-7, atol=1e-9) and
+                _mass_matches(float(row['mass']), self.mass) and
                 np.allclose(row['gravity_W'], self.gravity, rtol=1e-7, atol=1e-9) and
-                np.isclose(row['mass'], self.metadata['properties'][3], rtol=1e-6, atol=1e-8))
+                _mass_matches(float(row['mass']), self.metadata['properties'][3], rtol=1e-6, atol=1e-8))
         # Consecutive valid intervals grow the real-history run. A gap/invalid
         # row restarts it; episode changes get a separate writer. No reset padding
         # is accepted. RF valid rows certify an endpoint; RF+K certify a window.
@@ -174,7 +190,7 @@ class SeriesWriter:
         row['history_valid'] = self.run >= self.model.receptive_field
         self.buffer[self.used] = row
         if self.run >= self.model.input_length:
-            self.indices.write(np.array((self.identity, self.total), dtype=INDEX_DTYPE).tobytes())
+            self.indices.write(INDEX_PACK.pack(self.identity, self.total))
             self.window_count += 1
         self.previous_tick = int(row['tick'])
         self.used += 1
@@ -197,9 +213,194 @@ class SeriesWriter:
                     assumptions_valid=bool(self.assumptions_valid))
 
 
+def _prepare_attempt(source_index, source, output, shard_rows, model, progress=False):
+    """Process one attempt in isolation; source extraction/order semantics are unchanged."""
+    output = Path(output)
+    output.mkdir()
+    started = time.perf_counter()
+    series, counts = [], Counter()
+    meta = source['metadata']
+    dt = meta['resolved']['native_dt']
+    stride = round(.005 / dt)
+    active = {}
+    assumptions = {}
+    last_episode = {}
+    native = meta['resolved'].get('save_mode') == 'native'
+    for rows, end in _progress_blocks(source['path'], stride, output, progress):
+        if not rows:
+            continue
+        for env in range(len(rows[0]['episode_id'])):
+            episodes = environment_episodes(rows, env, dt)
+            for ep, episode in episodes.items():
+                if env in last_episode and ep < last_episode[env]:
+                    # The retained boundary may include an old terminal; it
+                    # is legitimate only if it contributes no new endpoint.
+                    if any(t > end - stride for t in episode['nodes']):
+                        raise ValueError('Decreasing per-environment episode identity')
+                    continue
+                # Match the source episode-wide mass/gravity assumptions,
+                # including supported off-grid states before held inputs exist.
+                for state in episode['nodes'].values():
+                    if not bool(state['episode_selected']) or not bool(state['episode_supported']):
+                        continue
+                    key = (env, ep)
+                    mass, gravity = float(state['mass']), state['gravity_W']
+                    if key not in assumptions:
+                        assumptions[key] = [mass, gravity.copy(), True]
+                    initial_mass, initial_gravity, _ = assumptions[key]
+                    assumptions[key][2] &= bool(np.isfinite(mass) and mass > 0 and
+                        np.isfinite(gravity).all() and np.linalg.norm(gravity) > 0 and
+                        _mass_matches(mass, initial_mass) and
+                        np.allclose(gravity, initial_gravity, rtol=1e-7, atol=1e-9))
+                # The retained start row is context, not another partial interval.
+                episode['pieces'] = [p for p in episode['pieces'] if p['end'] > end - stride]
+                grid, rejected = grid_intervals(episode, dt)
+                counts.update(rejected)
+                by_end = {p['end']: p for p in grid}
+                for tick in sorted(episode['nodes']):
+                    if tick % stride:
+                        continue
+                    state = episode['nodes'][tick]
+                    if env in active and active[env].metadata['episode'] == ep and active[env].previous_tick == tick:
+                        continue
+                    if not bool(state['episode_selected']):
+                        counts['unselected_grid_endpoints'] += 1
+                        continue
+                    if env not in active or active[env].metadata['episode'] != ep:
+                        if env in active:
+                            series.append(active.pop(env).close())
+                        # IDs are allocated separately from close order.
+                        identity = counts['series_created']; counts['series_created'] += 1
+                        details = dict(source=source_index, environment=env, episode=ep,
+                            split=source['split'], group=source['group'], robot=source['robot'],
+                            payload_id=source['payload_id'], properties=properties(meta, env).tolist(),
+                            interior_dimensions=meta['liquid']['geometry']['interior'])
+                        active[env] = SeriesWriter(output, identity, details, shard_rows, model)
+                    row = endpoint_row(state, by_end.get(tick), native)
+                    counts['grid_endpoints'] += 1
+                    counts['invalid_grid_endpoints'] += int(not row['state_valid'])
+                    active[env].append(row, stride)
+                    last_episode[env] = ep
+    series.extend(w.close() for w in active.values())
+    for item in series:
+        if item['source'] != source_index:
+            continue
+        check = assumptions.get((item['environment'], item['episode']))
+        if check is None or not check[2]:
+            item['assumptions_valid'] = False
+            item['rejected_assumptions_windows'] += item['windows']
+            item['windows'] = 0
+    return series, counts, dict(seconds=time.perf_counter()-started,
+        peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
+
+def _progress_blocks(path, stride, output, visible):
+    # Workers publish only a tiny progress record once per second. No raw rows
+    # travel through multiprocessing queues or accumulate in the parent process.
+    last = time.monotonic()
+    with tqdm(desc='Grid intervals', unit='bin', disable=not visible, mininterval=1., leave=False) as bar:
+        i = 0
+        for i, block in enumerate(grid_blocks(iter_merged_rows(path), stride), 1):
+            if _STOP_EVENT is not None and _STOP_EVENT.is_set():
+                raise RuntimeError('Preprocessing cancelled after another worker failed')
+            yield block
+            bar.update(1)
+            if time.monotonic() - last >= 1.:
+                atomic_json(output / 'progress.json', dict(bins=i, done=False))
+                last = time.monotonic()
+        atomic_json(output / 'progress.json', dict(bins=i, done=True))
+
+
+def _worker_init(stop_event):
+    global _STOP_EVENT
+    _STOP_EVENT = stop_event
+    import torch
+    torch.set_num_threads(1)
+
+
+def _adopt_attempt(output, work, result, offset):
+    """Assign stable global series IDs without copying the large row shards."""
+    series, counts, profile = result
+    for item in sorted(series, key=lambda s: s['id']):
+        local = item['id']
+        global_id = local + offset
+        for shard in range(item['shards']):
+            (work / f'series-{local:06d}-{shard:06d}.npy').rename(
+                output / f'series-{global_id:06d}-{shard:06d}.npy')
+        # Rewrite only compact indices in bounded blocks. Shards contain no series
+        # IDs, so same-filesystem rename is sufficient for the bulk of the data.
+        with open(work / f'series-{local:06d}.idx', 'rb') as src, open(output / f'series-{global_id:06d}.idx', 'wb') as dst:
+            while True:
+                entries = np.fromfile(src, dtype=INDEX_DTYPE, count=65536)
+                if not len(entries):
+                    break
+                entries['series'] += offset
+                entries.tofile(dst)
+        item['id'] = global_id
+    shutil.rmtree(work)
+    return series, counts, profile
+
+
+def _process_attempts(sources, output, shard_rows, model, workers, progress):
+    series, counts, profiles = [], Counter(), []
+    work_root = output / '.prepare-work'
+    work_root.mkdir()
+    with tqdm(total=len(sources), desc='Processing attempts', unit='attempt', disable=not progress) as bar:
+        def adopt(i, result):
+            items, rejected, profile = _adopt_attempt(output, work_root / str(i), result, len(series))
+            series.extend(items)
+            counts.update(rejected)
+            profiles.append(profile)
+            bar.update(1)
+        if not workers:
+            for i, source in enumerate(sources):
+                adopt(i, _prepare_attempt(i, source, work_root / str(i), shard_rows, model, progress))
+        else:
+            # Submit at most one attempt per worker. Commit in source order, so
+            # IDs, shards, indices and normalization are independent of scheduling.
+            context = multiprocessing.get_context('spawn')
+            stop_event = context.Event()
+            with ProcessPoolExecutor(max_workers=min(workers, len(sources)), mp_context=context,
+                                     initializer=_worker_init, initargs=(stop_event,)) as pool:
+                pending = {}
+                next_source = 0
+                try:
+                    for i in range(len(sources)):
+                        while next_source < min(len(sources), i + workers):
+                            j = next_source
+                            pending[j] = pool.submit(_prepare_attempt, j, sources[j], work_root / str(j), shard_rows, model)
+                            next_source += 1
+                        while not pending[i].done():
+                            wait([pending[i]], timeout=.25)
+                            # Fail promptly even if a later source fails before the
+                            # current source finishes; cancellation is cooperative.
+                            for future in pending.values():
+                                if future.done() and future.exception() is not None:
+                                    future.result()
+                            if progress:
+                                bins = 0
+                                for j in pending:
+                                    path = work_root / str(j) / 'progress.json'
+                                    if path.exists():
+                                        bins += json.loads(path.read_text()).get('bins') or 0
+                                bar.set_postfix(active_bins=bins, refresh=True)
+                        adopt(i, pending.pop(i).result())
+                except BaseException:
+                    stop_event.set()
+                    for future in pending.values():
+                        future.cancel()
+                    raise
+    work_root.rmdir()
+    return series, counts, profiles
+
+
 def prepare(config, output):
     from dataclasses import asdict
     started = time.perf_counter()
+    workers = config.get('num_workers', 0)
+    if not isinstance(workers, int) or isinstance(workers, bool) or workers < 0:
+        raise ValueError('num_workers must be a nonnegative integer')
+    progress = config.get('progress', True)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     model = ModelConfig(**config.get('model', {}))
@@ -212,7 +413,7 @@ def prepare(config, output):
     if config.get('collection_root') is not None:
         if config.get('sources'):
             raise ValueError('Use collection_root or explicit sources, not both')
-        sources, discovery = discover_sources(config['collection_root'], verify_attempt, exclude=(output,))
+        sources, discovery = discover_sources(config['collection_root'], verify_attempt, exclude=(output,), progress=progress, io_workers=workers)
         atomic_json(output / 'discovery.json', discovery)
         if discovery['errors']:
             raise ValueError(f"Discovery found {len(discovery['errors'])} invalid completed attempts; see {output / 'discovery.json'}")
@@ -221,13 +422,14 @@ def prepare(config, output):
     else:
         if not config.get('sources'):
             raise ValueError('Provide collection_root or a nonempty sources list')
-        sources = []
-        for entry in config['sources']:
+        def verify_source(entry):
             source = dict(entry)
             meta = read_metadata(source['path'])
             source.update(payload_id=meta['payload_id'], robot=meta['robot'],
                           hashes=verify_attempt(source['path']), metadata=meta)
-            sources.append(source)
+            return source
+        sources = list(tqdm(ordered_io_map(verify_source, config['sources'], workers),
+            total=len(config['sources']), desc='Verifying attempts', unit='attempt', disable=not progress))
     # Assign whole collection groups before emitting overlapping windows.
     # Retry grouping and held-out payload rules keep related trajectories out
     # of other splits; random window-level splitting would leak near duplicates.
@@ -241,83 +443,14 @@ def prepare(config, output):
         if key in retry_groups and retry_groups[key] != s['group']:
             raise ValueError('Related collector retries must share a group')
         retry_groups[key] = s['group']
-    series, counts = [], Counter()
-    for source_index, source in enumerate(sources):
-        meta = source['metadata']
-        dt = meta['resolved']['native_dt']
-        stride = round(.005 / dt)
-        active = {}
-        assumptions = {}
-        last_episode = {}
-        native = meta['resolved'].get('save_mode') == 'native'
-        for rows, end in grid_blocks(iter_merged_rows(source['path']), stride):
-            if not rows:
-                continue
-            for env in range(len(rows[0]['episode_id'])):
-                episodes = environment_episodes(rows, env, dt)
-                for ep, episode in episodes.items():
-                    if env in last_episode and ep < last_episode[env]:
-                        # The retained boundary may include an old terminal; it
-                        # is legitimate only if it contributes no new endpoint.
-                        if any(t > end - stride for t in episode['nodes']):
-                            raise ValueError('Decreasing per-environment episode identity')
-                        continue
-                    # Match the source episode-wide mass/gravity assumptions,
-                    # including supported off-grid states before held inputs exist.
-                    for state in episode['nodes'].values():
-                        if not bool(state['episode_selected']) or not bool(state['episode_supported']):
-                            continue
-                        key = (env, ep)
-                        mass, gravity = float(state['mass']), state['gravity_W']
-                        if key not in assumptions:
-                            assumptions[key] = [mass, gravity.copy(), True]
-                        initial_mass, initial_gravity, _ = assumptions[key]
-                        assumptions[key][2] &= bool(np.isfinite(mass) and mass > 0 and
-                            np.isfinite(gravity).all() and np.linalg.norm(gravity) > 0 and
-                            np.isclose(mass, initial_mass, rtol=1e-7, atol=1e-9) and
-                            np.allclose(gravity, initial_gravity, rtol=1e-7, atol=1e-9))
-                    # The retained start row is context, not another partial interval.
-                    episode['pieces'] = [p for p in episode['pieces'] if p['end'] > end - stride]
-                    grid, rejected = grid_intervals(episode, dt)
-                    counts.update(rejected)
-                    by_end = {p['end']: p for p in grid}
-                    for tick in sorted(episode['nodes']):
-                        if tick % stride:
-                            continue
-                        state = episode['nodes'][tick]
-                        if env in active and active[env].metadata['episode'] == ep and active[env].previous_tick == tick:
-                            continue
-                        if not bool(state['episode_selected']):
-                            counts['unselected_grid_endpoints'] += 1
-                            continue
-                        if env not in active or active[env].metadata['episode'] != ep:
-                            if env in active:
-                                series.append(active.pop(env).close())
-                            # IDs are allocated separately from close order.
-                            identity = counts['series_created']; counts['series_created'] += 1
-                            details = dict(source=source_index, environment=env, episode=ep,
-                                split=source['split'], group=source['group'], robot=source['robot'],
-                                payload_id=source['payload_id'], properties=properties(meta, env).tolist(),
-                                interior_dimensions=meta['liquid']['geometry']['interior'])
-                            active[env] = SeriesWriter(output, identity, details, shard_rows, model)
-                        row = endpoint_row(state, by_end.get(tick), native)
-                        counts['grid_endpoints'] += 1
-                        counts['invalid_grid_endpoints'] += int(not row['state_valid'])
-                        active[env].append(row, stride)
-                        last_episode[env] = ep
-        series.extend(w.close() for w in active.values())
-        for item in series:
-            if item['source'] != source_index:
-                continue
-            check = assumptions.get((item['environment'], item['episode']))
-            if check is None or not check[2]:
-                item['assumptions_valid'] = False
-                item['rejected_assumptions_windows'] += item['windows']
-                item['windows'] = 0
+    processing_started = time.perf_counter()
+    series, counts, worker_profiles = _process_attempts(sources, output, shard_rows, model,
+                                                      workers, progress)
+    processing_seconds = time.perf_counter() - processing_started
     series.sort(key=lambda s: s['id'])
     stats = {'motion': Moments((15,)), 'targets': Moments((5, 3)), 'properties': Moments((24,))}
     split_counts = {}
-    for split in ('train', 'validation', 'test'):
+    for split in tqdm(('train', 'validation', 'test'), desc='Indices and normalization', unit='split', disable=not progress):
         total = 0
         with open(output / f'{split}.idx', 'wb') as dest:
             for s in series:
@@ -344,13 +477,18 @@ def prepare(config, output):
     counts['assumption_rejected_windows'] = sum(s['rejected_assumptions_windows'] for s in series)
     counts['grid_endpoints_without_complete_window'] = sum(s['rows'] - s['windows'] for s in series)
     normalization = {k: v.result() for k, v in stats.items()}
-    artifacts = {p.name: digest(p) for p in output.iterdir() if p.suffix in ('.npy', '.idx')}
+    artifact_paths = sorted(p for p in output.iterdir() if p.suffix in ('.npy', '.idx'))
+    artifacts = dict(tqdm(ordered_io_map(lambda p: (p.name, digest(p)), artifact_paths, workers),
+        total=len(artifact_paths), desc='Hashing prepared data', unit='file', disable=not progress))
     manifest = dict(schema_version=SCHEMA_VERSION, imported_commit='300d3288b9bce83ccdc31b38bd7926f9484787e7',
         model=asdict(model), config=config, discovery=discovery, shard_rows=shard_rows, series=series,
         sources=[{k: v for k, v in s.items() if k != 'metadata'} for s in sources],
         property_fields=PROPERTY_FIELDS, normalization=normalization, counts=dict(counts),
         windows=split_counts, artifacts=artifacts,
         wrench_convention='completed 5 ms interval; endpoint base frame; fixed endpoint base origin; liquid-on-robot',
-        profile=dict(seconds=time.perf_counter()-started, peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+        profile=dict(seconds=time.perf_counter()-started, processing_seconds=processing_seconds,
+                     num_workers=workers, attempts=worker_profiles,
+                     grid_endpoints_per_second=counts['grid_endpoints']/max(processing_seconds, 1e-12),
+                     peak_worker_rss_kib=max((p['peak_rss_kib'] for p in worker_profiles), default=0), peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
     atomic_json(output / 'manifest.json', manifest)  # Completion marker written last.
     return manifest

@@ -13,6 +13,8 @@ def main():
     sub = p.add_subparsers(dest='command', required=True)
     prep = sub.add_parser('prepare'); prep.add_argument('--config'); prep.add_argument('--output', required=True)
     prep.add_argument('--root', help='Discover completed attempts recursively under this collection root')
+    prep.add_argument('--workers', type=int, help='Parallel attempt processes; 0 runs in the main process')
+    prep.add_argument('--no-progress', action='store_true', help='Disable preprocessing progress bars')
     fit = sub.add_parser('train'); fit.add_argument('--data'); fit.add_argument('--output')
     fit.add_argument('--config', required=True); fit.add_argument('--resume'); fit.add_argument('--max-updates', type=int)
     fit.add_argument('--device'); fit.add_argument('--dry-run', action='store_true')
@@ -27,6 +29,10 @@ def main():
         config = json.loads(Path(args.config).read_text()) if args.config else {}
         if args.root:
             config['collection_root'] = args.root
+        if args.workers is not None:
+            config['num_workers'] = args.workers
+        if args.no_progress:
+            config['progress'] = False
         if not config.get('collection_root') and not config.get('sources'):
             p.error('prepare needs --root or a config with collection_root/sources')
         result = prepare(config, args.output)
@@ -42,7 +48,7 @@ def main():
         output = args.output or selected.get('output')
         if not data or not output:
             p.error('Training needs data and output paths in JSON or --data/--output')
-        output = output.replace('{timestamp}', datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+        output = output.replace('{timestamp}', datetime.now(timezone.utc).strftime('%Y_%m_%d_%H_%M_%S_%fZ'))
         resume = args.resume or selected.get('resume')
         maximum = args.max_updates if args.max_updates is not None else selected.get('max_updates')
         if args.dry_run:
@@ -75,7 +81,11 @@ def main():
     loader = make_loader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)
     model = LiquidTCN(ModelConfig(**saved['model_config'])).to(args.device)
     model.load_state_dict(saved['model'])
-    result = evaluate(model, loader, Normalization(saved['normalization']), args.device, args.max_batches)
+    from .train import weights
+    short, long = weights(saved['config'], max(0, saved['update'] - 1))
+    result = evaluate(model, loader, Normalization(saved['normalization']), args.device, args.max_batches,
+        supervised=saved['config']['supervised'], huber_delta=saved['config']['huber_delta'],
+        lambda_short=short, lambda_long=long, physics_dtype=saved['config']['physics_dtype'])
     result.update(checkpoint_sha256=digest(args.checkpoint), data_manifest_sha256=saved['data_manifest_sha256'], split=args.split)
     atomic_json(args.output, result)
     print(json.dumps(dict(status=result['status'], selection_metric=result['selection_metric'], coverage=result['coverage']), indent=2))

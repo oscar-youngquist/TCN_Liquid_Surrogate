@@ -83,6 +83,9 @@
     "liquid_tcn.data retains recorded z and held values, with same-tick held-event updates",
     "Bounded heap merge replaces diagnostic whole-attempt buffering; episode extraction/grid functions run on one closed grid bin",
     "Compact split assembly follows analyze.prepare_intervals; native debug mode sums recorded world impulses because its labels use coupling-phase poses",
-    "Streaming continuous-history eligibility is checked against reference eligible_windows; rows are stored once in mmap shards"
+    "Streaming continuous-history eligibility is checked against reference eligible_windows; rows are stored once in mmap shards",
+    "Independent attempts processed by bounded spawned workers; stable source-order series IDs, zero-copy shard adoption and bounded index remapping",
+    "Bounded verification/hash thread queues; avoid redundant recursive completion checks while retaining stream-time checksum verification",
+    "Reuse endpoint rotation for identical split-piece state, scalar finite-mass tolerance checks equivalent to NumPy isclose, packed 16-byte window indices"
   ]
 }

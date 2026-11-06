@@ -141,6 +141,10 @@ def test_checkpoint_exact_resume_and_evaluation(tmp_path, workers, strategy):
     events=EventAccumulator(str(tmp_path/'resume'/'tensorboard')).Reload()
     assert [e.step for e in events.Scalars('train/loss')]==[1,2,3,4]
     assert events.Scalars('validation/selection_metric')[-1].step==4
+    for key in ('loss','supervised','short','long','secondary'):
+        assert events.Scalars('validation/'+key)[-1].value == pytest.approx(a['validation']['losses'][key])
+    for key,value in a['validation']['losses']['components'].items():
+        assert events.Scalars('validation/'+key)[-1].value == pytest.approx(value)
     assert [e.step for e in events.Scalars('train/pcgrad/projected')]==[1,2,3,4]
     records=[json.loads(line) for line in (tmp_path/'full'/'metrics.jsonl').read_text().splitlines()]
     assert records[0]['secondary']==0 and records[0]['projection']['projected']==0
@@ -294,6 +298,8 @@ def test_pre_pcgrad_checkpoint_requires_sum_strategy(tmp_path):
     state = load_checkpoint(checkpoint)
     del state['config']['gradient_strategy']
     del state['config']['pcgrad_eps']
+    del state['config']['validation_batch_size']
+    del state['config']['validation_num_workers']
     torch.save(state, checkpoint)
     with pytest.raises(ValueError, match='identical data provenance and configuration'):
         train(path, output, dict(cfg, gradient_strategy='pcgrad'), resume=checkpoint)

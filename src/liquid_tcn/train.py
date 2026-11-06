@@ -11,7 +11,7 @@ import time
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.auto import tqdm
+from .progress import TrainingProgress
 from .model import LiquidTCN, ModelConfig
 from .normalization import Normalization
 from .dataset import WindowDataset, EpochSampler, make_loader, to_device, close_loader
@@ -27,7 +27,7 @@ DEFAULTS = dict(seed=1, batch_size=16, num_workers=0, prefetch_factor=2, pin_mem
     lambda_short=1., lambda_long=1., supervised='mse', huber_delta=1.,
     physics_dtype='float64', scheduler='cosine', min_lr_ratio=.1,
     validation_every=250, checkpoint_every=250, patience=20, min_delta=0.,
-    validation_batches=None, amp=False, amp_rtol=.05, precision_rtol=.005,
+    validation_batches=None, validation_batch_size=None, validation_num_workers=None, amp=False, amp_rtol=.05, precision_rtol=.005,
     device='cpu', threads=4, progress=True, gradient_strategy='pcgrad', pcgrad_eps=1e-12)
 
 
@@ -91,6 +91,10 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         raise ValueError('gradient_strategy must be pcgrad or sum')
     if not math.isfinite(config['pcgrad_eps']) or config['pcgrad_eps'] <= 0:
         raise ValueError('pcgrad_eps must be finite and positive')
+    for key, minimum in (('validation_batch_size', 1), ('validation_num_workers', 0)):
+        value = config[key]
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < minimum):
+            raise ValueError(f'{key} must be null or an integer >= {minimum}')
     os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     torch.set_num_threads(config['threads'])
     random.seed(config['seed']); np.random.seed(config['seed']); torch.manual_seed(config['seed'])
@@ -138,6 +142,8 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         saved_config = dict(saved['config'])
         saved_config.setdefault('gradient_strategy', 'sum')
         saved_config.setdefault('pcgrad_eps', 1e-12)
+        saved_config.setdefault('validation_batch_size', None)
+        saved_config.setdefault('validation_num_workers', None)
         if saved['data_manifest_sha256'] != provenance or saved_config != config:
             raise ValueError('Resume requires identical data provenance and configuration')
         model.load_state_dict(saved['model']); optimizer.load_state_dict(saved['optimizer'])
@@ -146,7 +152,11 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         restore_rng(saved['rng'])
     options = {k: config[k] for k in ('batch_size', 'num_workers', 'prefetch_factor', 'pin_memory', 'seed')}
     loader = make_loader(training, sampler=sampler, **options)
-    val_loader = make_loader(validation, **options)
+    validation_options = dict(options)
+    for key in ('batch_size', 'num_workers'):
+        if config['validation_' + key] is not None:
+            validation_options[key] = config['validation_' + key]
+    val_loader = make_loader(validation, **validation_options)
     probe = to_device(next(iter(make_loader(training, batch_size=min(2, config['batch_size']), pin_memory=False))), device)
     checks = precision_check(model, probe, norm, config)
     atomic_json(output / 'precision.json', checks)
@@ -176,8 +186,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
             data_provenance=dict(sources=training.manifest['sources'], windows=training.manifest['windows'],
                                  preparation_config=training.manifest['config']), validation=last_validation))
 
-    progress = tqdm(total=stop, initial=update, desc='Training', unit='update',
-                    dynamic_ncols=True, disable=not config['progress'])
+    progress = TrainingProgress(total=stop, initial=update, disable=not config['progress'])
     try:
         while update < stop and stale < config['patience']:
             if sampler.position == sampler.length:
@@ -221,7 +230,9 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     loss_components=loss_components(result, short, long))
                 if update % config['validation_every'] == 0 or update == total_updates:
                     vstart = time.perf_counter()
-                    last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'])
+                    last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'],
+                        supervised=config['supervised'], huber_delta=config['huber_delta'],
+                        lambda_short=short, lambda_long=long, physics_dtype=config['physics_dtype'])
                     timing['validation_seconds'] += time.perf_counter()-vstart
                     # Select checkpoints using fixed normalized supervised MSE, independent
                     # of the changing physics weights (and the training MSE/Huber choice).
@@ -237,6 +248,11 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                         stale += 1
                     atomic_json(output/'validation.json', last_validation)
                     writer.add_scalar('validation/selection_metric', metric, update)
+                    validation_losses = last_validation['losses']
+                    for key in ('loss', 'supervised', 'short', 'long', 'secondary', 'lambda_short', 'lambda_long'):
+                        writer.add_scalar('validation/' + key, validation_losses[key], update)
+                    for key, value in validation_losses['components'].items():
+                        writer.add_scalar('validation/' + key, value, update)
                     for head, values in last_validation['heads'].items():
                         for axis, value in zip('xyz', values['rmse_axis']):
                             writer.add_scalar(f'validation/{head}/rmse_{axis}', value, update)

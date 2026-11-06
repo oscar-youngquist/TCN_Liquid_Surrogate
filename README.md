@@ -23,14 +23,55 @@ See the **[field-by-field configuration reference](docs/configuration.md)** for 
 
 ## Install
 
+Run these commands from the repository root. Choose either a standard Python
+virtual environment or Conda. Python 3.10 or newer is required; installation
+includes NumPy, PyTorch, TensorBoard, and tqdm. Genesis is not required.
+
+### Standard Python environment (`venv`)
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[test]'
-python -m pytest -q
 ```
 
-Python 3.10+; NumPy, PyTorch, TensorBoard, and tqdm. Install the appropriate PyTorch build for your CPU/CUDA environment. An existing PyTorch environment can also install this package directly. See [validation results](docs/validation.md) for packaging checks.
+In subsequent terminal sessions, activate it with:
+
+```bash
+source .venv/bin/activate
+```
+
+### Conda environment
+
+```bash
+conda create -n liquid-tcn python=3.11 pip -y
+conda activate liquid-tcn
+python -m pip install -e '.[test]'
+```
+
+In subsequent terminal sessions, activate it with:
+
+```bash
+conda activate liquid-tcn
+```
+
+### Verify the installation
+
+With either environment active:
+
+```bash
+python -m liquid_tcn --help
+python -m pytest -q
+python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+```
+
+Preprocessing and CPU training work without CUDA. For GPU training, use a PyTorch
+build compatible with your GPU and driver. An existing PyTorch environment can
+also install this package directly with the same `pip install` command.
+
+In VS Code, run **Python: Select Interpreter** and choose `.venv` or `liquid-tcn`,
+whichever you created. See [validation results](docs/validation.md) for packaging
+checks.
 
 ## Prepare data once
 
@@ -39,6 +80,21 @@ Point preparation at the **top-level output folder of the collection script**. I
 ```bash
 liquid-tcn prepare --root /path/to/liquid_collection/campaign --output data/prepared
 ```
+
+Progress bars show directory scanning, checksum verification, attempt processing,
+normalization/index assembly, and output hashing. For larger collections, process
+independent attempts in parallel:
+
+```bash
+liquid-tcn prepare --root /path/to/liquid_collection/campaign \
+  --output data/prepared --workers 4
+```
+
+`--workers 0` runs in the main process (the default without a configuration file).
+The preparation examples set `num_workers` to 4. Each worker needs its own Python,
+PyTorch, decoded chunk, and shard-buffer memory; increase workers only while CPU,
+RAM, and disk bandwidth allow. Use `--no-progress` for batch jobs. The JSON
+settings are `num_workers` and `progress`, separate from training loader settings.
 
 For configurable split fractions, model/window geometry, or shard sizing, copy `configs/prepare.example.json` to `configs/prepare.local.json`, set `collection_root`, and run:
 
@@ -59,7 +115,7 @@ Preparation verifies completion, reconciles chunk indices with result manifests,
 
 Recorded `z` and held inputs are retained. Missing `z` is reconstructed only from current gravity, base velocity/orientation, and recorded held estimates; missing held values can be recovered from `z`. Neither upcoming acceleration nor instantaneous acceleration reconstruction is used. Unsupported/unselected states, missing grid transitions, incomplete histories, and mass/gravity inconsistencies cannot produce training windows. Episode-wide mass/gravity violations invalidate already indexed windows too.
 
-Rows are stored once in fixed-size `.npy` shards; 16-byte indices identify window endpoints, including windows crossing shard boundaries. The loader never decodes NPZ files. Memory is bounded by three decoded source chunks, one grid bin, and one `shard_rows` buffer per active environment. Normalization uses valid **training** rows from eligible series, without duplicating overlapping windows. Constant channels use unit scale. The completion manifest records source and artifact hashes, source/prepared schemas, splits, normalization counts, rejection counts, and profiling information. A failed preparation has no completed manifest and requires a fresh output path.
+Rows are stored once in fixed-size `.npy` shards; 16-byte indices identify window endpoints, including windows crossing shard boundaries. The loader never decodes NPZ files. Each processing worker holds up to three decoded source chunks, one grid bin, and one `shard_rows` buffer per active environment. Metadata and file lists grow with the number of attempts, episodes, and shards; raw timestep rows are streamed. Normalization uses valid **training** rows from eligible series, without duplicating overlapping windows. Constant channels use unit scale. The completion manifest records source and artifact hashes, source/prepared schemas, splits, normalization counts, rejection counts, and profiling information. A failed preparation has no completed manifest and requires a fresh output path.
 
 ## Select a config and GPU
 
@@ -72,7 +128,7 @@ All training settings are in JSON. The four complete configurations retain direc
 | `configs/long.json` | 0 | 1 |
 | `configs/combined.json` | 1 | 1 |
 
-Edit `data`, `output`, `training`, and optional `resume` / `max_updates` in the selected JSON. `{timestamp}` in `output` creates a unique run directory. Keep the model section consistent with the preparation config; training rejects mismatched prepared window geometry. Changing model receptive field/horizon requires new preparation. Machine-specific `configs/*.local.json` files are ignored by Git.
+Edit `data`, `output`, `training`, and optional `resume` / `max_updates` in the selected JSON. `{timestamp}` in `output` creates a run directory formatted as `YYYY_MM_DD_HH_MM_SS_ffffffZ` (UTC, with microseconds). Keep the model section consistent with the preparation config; training rejects mismatched prepared window geometry. Changing model receptive field/horizon requires new preparation. Machine-specific `configs/*.local.json` files are ignored by Git.
 
 ```bash
 # Inspect without creating data/log directories or starting training.
@@ -94,7 +150,7 @@ liquid-tcn train --config configs/combined.json --data data/prepared \
   --output runs/smoke --max-updates 10 --device cpu
 ```
 
-A progress bar displays updates, phase, losses, learning rate, and validation metric. Set `training.progress` to false for quiet batch jobs. `max_updates` stops at an absolute update without changing the configured scheduler horizon. It must be large enough to reach a scheduled validation if a best checkpoint is desired.
+The progress display adapts to terminal width: the update bar stays on its own line, while phase, losses, learning rate, and validation metric wrap onto rows below it. Resizing the terminal reflows the display on the next refresh. Narrow terminals use a shorter timing display to keep the metrics visible. Set `training.progress` to false for quiet batch jobs. `max_updates` stops at an absolute update without changing the configured scheduler horizon. It must be large enough to reach a scheduled validation if a best checkpoint is desired.
 
 Set `training.epochs` to a positive count for complete dataset passes, or leave it null and use `training.updates`. Phase/ramp/validation/checkpoint intervals remain measured in optimizer updates; resolved logs record the effective update budget.
 
@@ -108,6 +164,13 @@ physics gradients are retained. The merged gradient is clipped before AdamW.
 Set `training.gradient_strategy` to `"sum"` for ordinary summed-loss gradients.
 See [gradient combination](docs/liquid_discrete_constraints.md#gradient-combination)
 for the formula and numerical conventions.
+
+Validation uses vectorized peak/lag metrics and reuses batch results across payload
+reports. `training.validation_batch_size` and `training.validation_num_workers`
+can override the training loader settings; both default to `null` (inherit).
+Full validation coverage remains the default. TensorBoard and `validation.json`
+include total and individual supervised/physics losses as well as physical-unit
+errors. See [validation losses and performance](docs/configuration.md#validation-losses-and-performance).
 
 Worker-local mmap caches have a configurable map count; prefetching is only enabled for workers. Spawned workers and sampling are seeded. Sampling uses an O(1)-state affine permutation, visiting every window once per epoch rather than allocating a dataset-sized permutation. Resume saves the **consumed** sampler position, independent of prefetch progress. Pinned transfers are enabled when CUDA is available. For very small cached datasets, zero workers can be faster than multiprocessing.
 
@@ -173,6 +236,8 @@ python -m pytest -q
 python tools/compare_port.py --source /read-only/baseline-snapshot \
   --attempt /recorded/attempt --output artifacts/port-equivalence.json
 python tools/profile_loader.py --data data/prepared --workers 0 --output artifacts/loader.json
+python tools/profile_prepare.py --config configs/prepare.local.json \
+  --output artifacts/preparation-profile --workers 0 2 4
 python tools/check_precision.py --data data/prepared --amp --output artifacts/precision.json
 ```
 

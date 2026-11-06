@@ -19,16 +19,16 @@
   },
   "training": {
     "seed": 1,
-    "batch_size": 16,
+    "batch_size": 1024,
     "num_workers": 0,
     "prefetch_factor": 2,
     "pin_memory": true,
     "cache_size": 8,
     "updates": 20000,
-    "pretrain_updates": 1000,
-    "ramp_updates": 5000,
+    "pretrain_updates": 100,
+    "ramp_updates": 900,
     "pretrain_lr": 0.001,
-    "physics_lr": 0.0001,
+    "physics_lr": 0.001,
     "weight_decay": 0.0001,
     "gradient_clip": 1.0,
     "lambda_short": 1,
@@ -46,11 +46,13 @@
     "amp": false,
     "amp_rtol": 0.05,
     "precision_rtol": 0.005,
-    "device": "cpu",
+    "device": "cuda:1",
     "threads": 4,
     "progress": true,
     "epochs": null,
     "gradient_strategy": "pcgrad",
-    "pcgrad_eps": 1e-12
+    "pcgrad_eps": 1e-12,
+    "validation_batch_size": null,
+    "validation_num_workers": null
   }
 }

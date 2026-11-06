@@ -21,5 +21,7 @@
     0.1
   ],
   "held_out_payloads": [],
-  "collection_root": "/data/liquid_collection/campaign"
+  "collection_root": "/data/liquid_collection/campaign",
+  "num_workers": 4,
+  "progress": true
 }
