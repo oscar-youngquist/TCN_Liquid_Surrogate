@@ -1,5 +1,6 @@
 """Supervised pretraining, discrete-physics fine-tuning, logging, and resumable checkpoints."""
 import copy
+import fcntl
 from dataclasses import asdict
 import json
 import math
@@ -7,10 +8,13 @@ import os
 from pathlib import Path
 import random
 import resource
+import signal
+from threading import Event
 import time
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from .batch_logging import BatchLogger, resolve_mode
 from .progress import TrainingProgress
 from .model import LiquidTCN, ModelConfig
 from .normalization import Normalization
@@ -80,7 +84,48 @@ def precision_check(model, batch, norm, config):
 
 
 def train(data, output, configuration=None, resume=None, max_updates=None,
-          expected_model=None, launch_config=None):
+          expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone'):
+    """Logging is a runtime option, deliberately outside checkpoint configuration.
+
+    Older checkpoints therefore need no migration: omitted logging_mode means
+    auto and omitted trial_id means standalone. SIGTERM/SIGINT only set a flag;
+    serialization happens after a complete optimizer/scheduler/sampler update.
+    """
+    config = dict(DEFAULTS, **(configuration or {}))
+    log = BatchLogger(trial_id, max_updates or config['updates'])
+    stop_requested = Event()
+    received = []
+    previous = {}
+    run_lock = None
+    def request_stop(number, frame):
+        received.append(number)
+        stop_requested.set()
+    try:
+        Path(output).mkdir(parents=True, exist_ok=True)
+        run_lock = open(Path(output)/'.training.lock', 'a')
+        try:
+            fcntl.flock(run_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another worker owns this training directory')
+        for number in (signal.SIGTERM, signal.SIGINT):
+            previous[number] = signal.signal(number, request_stop)
+        log.emit('startup', output=str(output), resume=str(resume) if resume else None,
+                 scheduler_horizon=config['updates'])
+        return _train(data, output, configuration, resume, max_updates, expected_model,
+                      launch_config, logging_mode, log, stop_requested, received)
+    except BaseException as error:
+        log.emit('failure', error_type=type(error).__name__, error=str(error))
+        raise
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        if run_lock is not None:
+            run_lock.close()
+
+
+def _train(data, output, configuration, resume, max_updates, expected_model,
+           launch_config, logging_mode, log, stop_requested, received):
+    mode = resolve_mode(logging_mode, (configuration or {}).get('progress', True))
     unknown = set(configuration or {}) - set(DEFAULTS)
     if unknown:
         raise ValueError(f'Unknown training configuration fields: {sorted(unknown)}')
@@ -163,13 +208,26 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     stop = min(total_updates, max_updates) if max_updates is not None else total_updates
     timing = dict(loader_seconds=0., training_seconds=0., validation_seconds=0., samples=0, updates=0, clipped=0)
     start = time.perf_counter()
-    last_validation = None
+    last_validation = saved.get('validation') if resume else None
+    log.initial = update
+    log.budget = stop
+    log.state.update(update=update, validation_metric=last_validation['selection_metric'] if last_validation else None)
     atomic_json(output / 'config.json', dict(training=config, effective_updates=total_updates, model=asdict(model.config),
         data_manifest_sha256=provenance, normalization=norm.stats,
         preparation_config=training.manifest['config']))
     atomic_json(output / 'requested_config.json', configuration or {})
     if launch_config is not None:
         atomic_json(output / 'launch_config.json', launch_config)
+    if resume and (output/'metrics.jsonl').exists():
+        with open(output/'metrics.jsonl') as source, open(output/'metrics.jsonl.tmp', 'w') as target:
+            for line in source:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # A killed write may leave one partial final line.
+                if entry['update'] <= update:
+                    target.write(line)
+        os.replace(output/'metrics.jsonl.tmp', output/'metrics.jsonl')
     writer = SummaryWriter(log_dir=str(output / 'tensorboard'), purge_step=update + 1 if resume else None)
     writer.add_text('run/configuration', json.dumps(config, indent=2), update)
 
@@ -185,10 +243,14 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
             normalization=norm.stats, config=config, data_manifest_sha256=provenance,
             data_provenance=dict(sources=training.manifest['sources'], windows=training.manifest['windows'],
                                  preparation_config=training.manifest['config']), validation=last_validation))
+        log.emit('checkpoint', update=update, checkpoint=str(output/name))
 
-    progress = TrainingProgress(total=stop, initial=update, disable=not config['progress'])
+    progress = TrainingProgress(total=stop, initial=update, disable=mode != 'progress')
+    previous_phase = None
     try:
-        while update < stop and stale < config['patience']:
+        if not resume:
+            save('latest.pt')
+        while update < stop and stale < config['patience'] and not stop_requested.is_set():
             if sampler.position == sampler.length:
                 sampler.next_epoch()
             sampler.limit = (stop - update) * config['batch_size']
@@ -203,6 +265,10 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config['amp']):
                     pred = model(norm.normalize('motion', batch['motion']), norm.normalize('properties', batch['properties']))
                 short, long = weights(config, update)
+                phase = 'supervised' if short == long == 0 else 'physics'
+                if phase != previous_phase:
+                    log.emit('phase', update=update, phase=phase)
+                    previous_phase = phase
                 result = objective(pred.float(), batch, norm, short, long, config['supervised'],
                                    config['huber_delta'], config['physics_dtype'])
                 # Keep supervision primary; project the SUM of weighted physics
@@ -217,7 +283,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                 # future indices; saving its iterator progress would skip data on resume.
                 sampler.advance(len(batch['motion'])); update += 1
                 if device.type == 'cuda':
-                    torch.cuda.synchronize()
+                    torch.cuda.synchronize(device)
                 timing['training_seconds'] += time.perf_counter()-train_start
                 timing['samples'] += len(batch['motion']); timing['updates'] += 1
                 timing['clipped'] += int(grad > config['gradient_clip'])
@@ -228,7 +294,9 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     gradient_norm=float(grad), learning_rate=used_lr,
                     secondary=float(result['secondary'].detach()), projection=projection,
                     loss_components=loss_components(result, short, long))
+                log.state.update({key: record[key] for key in log.state if key in record})
                 if update % config['validation_every'] == 0 or update == total_updates:
+                    log.emit('validation_start', update=update)
                     vstart = time.perf_counter()
                     last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'],
                         supervised=config['supervised'], huber_delta=config['huber_delta'],
@@ -241,9 +309,13 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     if metric is None or not math.isfinite(metric):
                         raise ValueError('Empty or nonfinite validation metric')
                     record['validation_metric'] = metric
+                    log.emit('validation_end', update=update, validation_metric=metric, seconds=time.perf_counter()-vstart,
+                             **{'validation_' + k: (last_validation['losses'] or {}).get(k)
+                                for k in ('loss', 'supervised', 'short', 'long')})
                     if metric < best - config['min_delta']:
                         best, stale = metric, 0
                         save('best.pt')
+                        atomic_json(output/'best_validation.json', last_validation)
                     else:
                         stale += 1
                     atomic_json(output/'validation.json', last_validation)
@@ -279,9 +351,11 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
                     short=f"{record['short']:.3g}", long=f"{record['long']:.3g}",
                     lr=f"{record['learning_rate']:.2g}",
                     val='pending' if last_validation is None else f"{last_validation['selection_metric']:.4g}", refresh=False)
+                if update % 250 == 0:
+                    log.emit('updates', update=update)
                 if update % config['checkpoint_every'] == 0:
                     save('latest.pt')
-                if update >= stop or stale >= config['patience']:
+                if update >= stop or stale >= config['patience'] or stop_requested.is_set():
                     break
                 tick = time.perf_counter()
         save('latest.pt')
@@ -293,8 +367,10 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     timing.update(wall_seconds=time.perf_counter()-start,
         samples_per_training_second=timing['samples']/max(timing['training_seconds'], 1e-12),
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-        peak_device_bytes=torch.cuda.max_memory_allocated() if device.type=='cuda' else 0,
+        peak_device_bytes=torch.cuda.max_memory_allocated(device) if device.type=='cuda' else 0,
         clipped_fraction=timing['clipped']/max(timing['updates'], 1), final_update=update,
-        stopped_early=stale >= config['patience'])
+        stopped_early=stale >= config['patience'], interrupted=stop_requested.is_set(),
+        signal=received[-1] if received else None)
     atomic_json(output/'profile.json', timing)
+    log.emit('interrupted' if stop_requested.is_set() else 'completion', update=update, stopped_early=timing['stopped_early'])
     return timing

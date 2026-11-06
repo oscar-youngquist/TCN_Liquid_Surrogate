@@ -242,3 +242,17 @@ python tools/check_precision.py --data data/prepared --amp --output artifacts/pr
 ```
 
 The reference snapshot is needed only by the optional comparison tool; [provenance](docs/provenance.md) describes how to obtain it. The regular test suite uses synthetic fixtures generated in this repository. [Validation results](docs/validation.md) distinguish reproducible tests from historical checks on recordings that are not bundled. Source recordings, prepared data, weights, TensorBoard logs, profiler traces, and local configs are ignored by Git; reproducible source/tests/configs and compact validation summaries remain tracked.
+
+## Hyperparameter sweeps
+
+The [two-stage sweep guide](docs/sweeps.md) documents the 16 trials based on
+reviewed commit `5c7792d`, their immutable configs, screening/promotion rules,
+checkpoint recovery, and exact Bash commands for an existing Unity allocation.
+`scripts/launch_sweep_unity.sh` starts at most four independent training processes;
+it does not submit jobs. Screening stops at update 5000 while preserving the
+20,000-update scheduler horizon, then the baseline and best three alternatives
+can resume to the full budget. All selection uses full validation, never test data.
+
+Training supports `--logging-mode auto|plain|progress`. Non-TTY and Slurm runs use
+plain timestamped logging by default; the sweep always uses it. TensorBoard and
+per-update JSONL loss records retain their existing detail.

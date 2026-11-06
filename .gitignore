@@ -261,3 +261,8 @@ events.out.tfevents.*
 *.tmp
 configs/*.local.json
 .DS_Store
+
+# Local sweep outputs and process ownership locks
+/sweeps/
+.coordinator.lock
+.training.lock

@@ -288,3 +288,17 @@ small cached datasets. `validation_batches` reduces evaluation coverage, while
 `validation_every` changes frequency; neither speeds up the same complete pass.
 Resume still requires matching settings. Older checkpoints without the new loader
 fields inherit their original training batch size and worker count via null defaults.
+
+## Sweep and batch logging controls
+
+See [Hyperparameter sweeps](sweeps.md) for the fixed 16-trial design, common
+validation overrides, launch arguments, and resume rules. Sweep configs inherit
+the packaged `5c7792d` baseline rather than the current editable combined config.
+
+Training CLI options `--logging-mode auto|plain|progress` and `--trial-id` are
+runtime controls, not training hyperparameters. They do not participate in
+checkpoint configuration equality. With no options, older checkpoints use
+`auto` and `standalone`. Auto mode enables the progress display only on a TTY,
+outside Slurm, and when `training.progress` is true. Otherwise it emits plain
+batch events; setting `training.progress=false` no longer makes the console silent.
+Explicit `--logging-mode progress` takes precedence over that legacy boolean.

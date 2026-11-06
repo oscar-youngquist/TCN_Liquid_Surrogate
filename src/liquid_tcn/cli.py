@@ -18,6 +18,8 @@ def main():
     fit = sub.add_parser('train'); fit.add_argument('--data'); fit.add_argument('--output')
     fit.add_argument('--config', required=True); fit.add_argument('--resume'); fit.add_argument('--max-updates', type=int)
     fit.add_argument('--device'); fit.add_argument('--dry-run', action='store_true')
+    fit.add_argument('--logging-mode', choices=('auto', 'plain', 'progress'), default='auto')
+    fit.add_argument('--trial-id', default='standalone')
     ev = sub.add_parser('evaluate'); ev.add_argument('--data', required=True); ev.add_argument('--checkpoint', required=True)
     ev.add_argument('--split', choices=('train','validation','test'), default='test'); ev.add_argument('--output', required=True)
     ev.add_argument('--device', default='cpu'); ev.add_argument('--batch-size', type=int, default=16)
@@ -55,8 +57,11 @@ def main():
             print(json.dumps(dict(data=data, output=output, training=dict(DEFAULTS, **configuration),
                                   model=selected.get('model'), resume=resume, max_updates=maximum), indent=2))
             return
-        print(json.dumps(train(data, output, configuration, resume, maximum,
-                               selected.get('model'), selected), indent=2)); return
+        result = train(data, output, configuration, resume, maximum,
+                       selected.get('model'), selected, args.logging_mode, args.trial_id)
+        if result.get('interrupted'):
+            raise SystemExit(128 + (result.get('signal') or 15))
+        return
     from .checkpoint import load_checkpoint, atomic_save
     saved = load_checkpoint(args.checkpoint)
     if args.command == 'export':
