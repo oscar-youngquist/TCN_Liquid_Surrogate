@@ -1,4 +1,4 @@
-# Deadline-bound staged sweeps
+# Resumable staged sweeps
 
 `launch_staged_sweep_unity.sh` runs a dependent search, followed by matched-seed
 physics ablations and held-out test evaluation. It runs independent Python
@@ -14,11 +14,10 @@ separate from prepared data, old sweeps, and concurrency benchmarks:
 ```bash
 bash scripts/launch_staged_sweep_unity.sh \
   --data /path/to/prepared \
-  --output /path/to/runs/staged_48h \
+  --output /path/to/runs/staged \
   --devices 0 \
   --concurrency 12 \
-  --threads 2 \
-  --budget-hours 48
+  --threads 2
 ```
 
 `--devices 0,1` uses two logical GPUs. `--devices cpu` is available for development.
@@ -28,12 +27,45 @@ batch-1024 models fit. CPU affinity, `SLURM_CPUS_PER_TASK`, available host/cgrou
 memory and measured CUDA memory can reduce concurrency. Each process retains its
 own optimizer, sampler and model. There is no DDP or cross-process gradient sharing.
 
-Append `--resume` with the same paths, devices, threads, budget and code to retry
-an interrupted run. The original deadline persists; restarting never grants
-another 48 hours. `SLURM_JOB_END_TIME`, when present as a Unix timestamp, can
-shorten it. A changed resource capacity is rejected on resume because the old
-placement and throughput measurement no longer establish safe execution. Use
-an allocation with compatible capacity to continue that run.
+Append `--resume` with the original data and output paths to continue an interrupted
+run. Slurm supplies each allocation's wall-time allowance; historical deadline and
+budget fields are ignored. `--budget-hours` is accepted only for compatibility,
+with a deprecation warning. No forecast or application timer cancels work or prunes
+candidates. Update limits and validation patience remain active.
+
+Use `--resume --allow-code-change` to acknowledge an implementation update. Resume
+archives metadata under `metadata_history/` before migration and records old/new
+source fingerprints and allocation history in `staged_sweep.json`. Original
+provenance is retained. Dataset identity, normalization, architecture, exact saved
+training configuration, checkpoint integrity and runtime/serialization compatibility
+remain strict; the flag does not waive those checks. A runtime-version mismatch
+requires a compatible environment.
+
+Each allocation reassesses capacity and records current devices, thread counts and
+execution assignments. Valid assignments are retained where possible; execution
+can move without rewriting immutable trial configurations. Model, optimizer,
+scheduler, RNG, consumed sampler position, monitoring/patience state and shortlist
+resume from the checkpoint. Different hardware need not reproduce bitwise results.
+Verified completed stages and matching cached evaluations are reused.
+
+To recover the existing Unity run after updating the installed package, run this
+inside a new allocation with the environment activated:
+
+```bash
+SWEEP_OUTPUT=/scratch3/workspace/oyoungquist_umass_edu-liquid-tcn/runs/sweep_a100_66862094
+SWEEP_DATA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["data"])' "$SWEEP_OUTPUT/staged_sweep.json")
+bash scripts/launch_staged_sweep_unity.sh \
+  --data "$SWEEP_DATA" \
+  --output "$SWEEP_OUTPUT" \
+  --devices 0 --concurrency 12 --threads 2 \
+  --resume --allow-code-change
+```
+
+Keep this original output path, rather than creating one from the new
+`${SLURM_JOB_ID}`. The new Slurm submission supplies the new wall-time allowance.
+For the interrupted stage-2 run, verified `t005`/`t006` results are retained and
+`t000` resumes its saved stage-1 endpoint toward 5,000 updates before promotion.
+No successful results are fabricated from incomplete work.
 
 Optional leading `--python /path/to/env/bin/python` selects an interpreter. The
 launcher otherwise uses `PYTHON`, or `python` from the activated environment.
@@ -44,8 +76,8 @@ creating files, requiring prepared data to exist, or initializing CUDA:
 
 ```bash
 bash scripts/launch_staged_sweep_unity.sh \
-  --data /path/to/prepared --output /path/to/runs/staged_48h \
-  --devices 0,1 --concurrency 12 --threads 2 --budget-hours 48 --dry-run
+  --data /path/to/prepared --output /path/to/runs/staged \
+  --devices 0,1 --concurrency 12 --threads 2 --dry-run
 ```
 
 The stage-plan portion is available in [staged_plan.example.json](staged_plan.example.json).
@@ -98,7 +130,7 @@ inherits activation. Each comparison retains its incumbent. Search seed 1 and
 its window ordering are common to all candidates.
 
 Identical configurations reuse `latest.pt`, including optimizer, scheduler, RNG,
-and acknowledged sampler position. Device placement stays fixed after registration.
+and acknowledged sampler position. Saved device configuration stays fixed after registration; allocation-specific execution placement is recorded separately.
 Changed training settings or seeds start fresh. Output paths and placement are
 excluded from the registry's scientific identity; exact saved training settings,
 including the assigned device, are still checked by the trainer on continuation.
@@ -110,8 +142,7 @@ midpoints toward the nearest earlier tested LR, bounded by 0.0001–0.001. Weigh
 pairs use geometric midpoints toward the stage-4 runner-up. At a boundary, a
 proposed LR can duplicate the incumbent; stable Cartesian combinations of those
 nearby settings replace duplicates. Generation rules, parent rankings and exact
-resolved configurations are saved. With sufficient time there are eight distinct
-candidates at 10,000 updates.
+resolved configurations are saved. There are eight distinct candidates at 10,000 updates; forecasts do not remove candidates.
 
 Stages 1–5 disable early stopping and rank the full-validation
 `normalized_supervised_mse_all_heads` score of the **exact endpoint checkpoint**.
@@ -134,7 +165,7 @@ deduplicate by update. After maximum-update or valid patience completion, evalua
 all retained checkpoints on full validation and choose the lowest full MSE,
 breaking ties by earlier update. `selection.json` records stopping reason/update,
 selected update, checkpoint hashes, subset coverage and full-validation score.
-Deadline/interruption cannot qualify as patience completion.
+Interruption cannot qualify as patience completion.
 
 Monitoring state, patience baseline/stale count and shortlist hashes are embedded
 in resumable `latest.pt`, separately from training configuration equality.
@@ -144,8 +175,8 @@ validation passes are cached by checkpoint/subset identity and reused if selecti
 is interrupted; selection/report writes and selected-checkpoint replacement are
 atomic. Keep latest, shortlist, selected best and stage archives when moving runs.
 Standalone and legacy training retain their existing validation/patience behavior.
-As before, coordinator resume requires the same package source fingerprint; old
-sweep results are not silently reinterpreted under the new selection policy.
+Code changes require explicit acknowledgement as described above; existing
+results still undergo integrity and selection-policy checks.
 
 Stage 6 freezes the chosen settings and changes only seed and ablation weights:
 full retains both, supervised-only zeros both, short-only zeros long, and long-only
@@ -153,15 +184,13 @@ zeros short. All other settings, including pretraining/ramp and LR schedule,
 remain fixed. Matching seeds therefore match initial weights and sample order.
 Disabling physics does not change the learning-rate trajectory.
 
-## Preflight, allocation limits and deadline
+## Preflight and allocation limits
 
-The wall-clock budget begins at coordinator invocation and includes verification,
-profiling, startup, training, validation, checkpoints, tests and reporting.
 Preflight runs the actual trainer for 200 warmup + 50 measured updates, then full
 validation (batch 1024, zero loader workers). It first probes each logical device
 individually to obtain host RSS and CUDA peaks across startup, training and
 validation. It then measures the **actual selected concurrent cohort** using the
-benchmark's bounded, failure-aware barriers. Twelve-process throughput is never
+benchmark's failure-aware barriers, with no elapsed-time expiry in staged preflight. Twelve-process throughput is never
 extrapolated from a four-process measurement.
 
 The CPU limit reserves one coordinator CPU when possible. Per-worker math-library
@@ -186,21 +215,18 @@ per-device scheduling waves and a 25% time margin. Subset-check cost is conserva
 estimated at 5% of the measured detailed full-validation pass; it is not an
 independent throughput measurement. Forecasts separately count subset checks,
 one endpoint pass per search candidate, up to four shortlist passes per final run,
-and twelve test passes. Final-stage reserves assume the maximum 20,000 updates,
-without relying on early stopping to fit the budget.
+and twelve test passes. Final-stage estimates assume the maximum 20,000 updates.
 Known completed updates are deducted for current-stage continuations; unknown
-future candidates are conservatively costed as fresh runs. Final confirmation,
-all twelve test evaluations, and at least **1800 seconds for shutdown/reporting**
-are reserved before launching a search stage. Forecasts are conservative estimates,
-not a guarantee that a particular allocation completes the search in 48 hours.
+future candidates are conservatively costed as fresh runs. Forecasts are
+informational only: there is no shutdown reserve, launch refusal, or candidate
+pruning based on available time. Preflight barriers and loader profiling have no
+application time deadline; worker failures and termination signals still abort them.
 
-If needed, optional stage-5 alternatives are removed in reverse generation order,
-with every adjustment recorded. Retained candidates still run to 10,000 updates.
-If mandatory work cannot fit, the run stops as incomplete. Final runs stop only at their maximum or the declared patience rule; budget
-termination remains incomplete. Each stage also has an execution deadline that preserves
-its forecast reserve. SIGTERM/SIGINT stops dispatch and requests checkpointed
-worker exits. Unresponsive children are killed after a bounded 300-second grace;
-the last atomic checkpoint remains recoverable. Interrupted stages cannot promote.
+SIGTERM/SIGINT stops dispatch and requests checkpointed worker exits. Unresponsive
+children are killed after a bounded 300-second shutdown grace, which starts only
+after a termination request; the last atomic checkpoint remains recoverable.
+Interrupted stages cannot promote. Slurm may kill a process before checkpointing
+finishes, so recovery always uses the last completed atomic checkpoint.
 
 ## Test gate and reports
 
@@ -232,8 +258,9 @@ JSON carries all axes, units, coverage, checkpoint paths, hashes and provenance.
 An incomplete run has no purported twelve-run aggregate.
 
 ```text
-staged_48h/
-  staged_sweep.json          # Original deadline, baseline/code/runtime/data hashes
+staged/
+  staged_sweep.json          # Original provenance, session history and execution assignments
+  metadata_history/         # Metadata snapshots before each resume migration
   state.json                # Candidate registry, parents, rankings, attempts, resources
   verification.json         # Trusted local prepared-data verification receipt
   monitor_subset.json       # Shared fixed stratified validation indices
@@ -259,7 +286,7 @@ staged_48h/
 Worker consoles contain timestamped phase, update (every 250), validation,
 checkpoint and failure events, with stage/trial/seed/device in the identifier.
 Coordinator heartbeats report active assignments, pending/completed counts and
-remaining time. Detailed per-update JSONL and TensorBoard tags remain available;
+elapsed time. Detailed per-update JSONL and TensorBoard tags remain available;
 there are no terminal progress bars.
 
 ## Loader, logging and timing changes
@@ -296,7 +323,7 @@ measurements conservative relative to ordinary training.
 The tests include shard-crossing/reordered/repeated samples, receipt invalidation,
 bitwise checkpoint/optimizer parity against ordinary sample collation, exact resume,
 dependent inheritance/deduplication, equal-budget promotion, matched seeds,
-resource caps, wave arithmetic, deadline preservation, and the test-selection gate.
+resource caps, wave arithmetic, ignored legacy deadlines, and the test-selection gate.
 A tiny CPU integration test exercises the full six-stage lifecycle, twelve final
 selections, test reports and completed-run resume with reduced test-only budgets. Focused monitoring tests
 check subset reuse, agreement with the existing evaluator, final patience state
@@ -305,7 +332,7 @@ The existing sweep/benchmark tests exercise subprocess failures, barriers, signa
 and cleanup. No production sweep is required:
 
 ```bash
-python -m pytest -q tests/test_staged_sweep.py tests/test_sweep.py tests/test_benchmark.py
+python -m pytest -q tests/test_precision_resume.py tests/test_staged_sweep.py tests/test_sweep.py tests/test_benchmark.py
 bash -n scripts/launch_staged_sweep_unity.sh
 ```
 
@@ -315,7 +342,7 @@ after the batched-fetch change, using the fastest of four in-memory-cache passes
 This roughly 2.38× result measures loader work, not end-to-end GPU training or disk
 throughput on Unity. See [performance verification](performance_verification.md)
 for training parity, timings and regression results. Twelve-process GPU capacity,
-MIG telemetry, long-run memory behavior and 48-hour completion require measurements
+MIG telemetry, long-run memory behavior and production completion require measurements
 inside the target allocation; they have not been established by CPU tests.
 
 Focused schedule-policy verification (2026-11-06): 27 directly affected staged,
@@ -325,3 +352,11 @@ windows. The tiny CPU lifecycle covers endpoint promotion, final patience,
 shortlist selection, persisted resume state, cached full-validation reuse and the
 frozen test gate. Bash syntax and diff-whitespace checks passed. No GPU benchmark
 or production sweep was run; production timing and GPU behavior remain unverified.
+
+Recovery verification (2026-11-09): 42 directly affected precision, staged-sweep,
+legacy-sweep and benchmark tests passed. A tiny CPU recovery test verifies an
+expired historical deadline, explicit code-change acknowledgement, preserved
+completed stage-2 results, checkpoint continuation and monitoring state. Precision
+tests cover finite FP32 warnings, nonfinite failures, AMP rejection and unchanged
+model/optimizer/RNG state. Bash syntax and whitespace checks passed. The Unity run
+was not accessed or restarted; allocation remapping on GPU remains unverified.

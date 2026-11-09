@@ -1,6 +1,6 @@
 # Two-stage hyperparameter sweep
 
-For dependent search, matched-seed ablations and a persistent 48-hour deadline,
+For dependent search, matched-seed ablations and resumable allocation sessions,
 use the separate [staged sweep](staged_sweeps.md). This guide describes the original
 fixed 16-trial workflow, whose configurations and promotion rules are unchanged.
 

@@ -101,9 +101,9 @@ class StageValidation:
     First entry into stage 6 starts empty patience/shortlist state at the resumed
     update. Earlier-stage monitoring never counts toward final-stage patience.
     """
-    def __init__(self, stage, budget, subset_path, deadline):
+    def __init__(self, stage, budget, subset_path, deadline=None):
         self.stage, self.budget = stage,budget
-        self.subset_path, self.deadline = Path(subset_path),deadline
+        self.subset_path = Path(subset_path)  # Legacy deadline argument is ignored.
         self.subset = json.loads(self.subset_path.read_text())
         self.subset_hash = digest(self.subset_path)
         self.state = None
@@ -131,7 +131,7 @@ class StageValidation:
         return self.stage=='6' and self.state is not None and self.state['stale']>=3
 
     def cancelled(self):
-        return self.stopped.is_set() or time.time()>=self.deadline
+        return self.stopped.is_set()
 
     def pending_monitor(self, update):
         return (update>self.state['entry_update'] and update % MONITOR_EVERY==0
@@ -225,6 +225,8 @@ class StageValidation:
                 atomic_json(report_path,record)
                 self.log.emit('validation_end',scope=scope,update=row['update'],validation_metric=report['selection_metric'])
             evaluated.append(dict(row,report_path=str(report_path),score=record['report']['selection_metric'],report=record['report']))
+        if self.cancelled():
+            raise InterruptedError('Checkpoint selection interrupted')
         selected = min(evaluated,key=lambda r:(r['score'],r['update']))
         copy_atomic(self.output/selected['file'],folder/'best.pt')
         copy_atomic(folder/'best.pt',self.output/'best.pt')

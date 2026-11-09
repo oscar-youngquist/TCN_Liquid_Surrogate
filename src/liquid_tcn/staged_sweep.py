@@ -1,4 +1,4 @@
-"""Deadline-bound dependent search and matched-seed ablations in an existing allocation."""
+"""Resumable dependent search and matched-seed ablations in an existing allocation."""
 import argparse
 import copy
 import fcntl
@@ -15,7 +15,7 @@ from .ported.storage import atomic_json, digest
 from .sweep import (BASELINE, BASELINE_COMMIT, Coordinator, code_provenance, event,
                     generate_trials, inspect_result, read_json, runtime_versions, validate_devices)
 from .staged_plan import BUDGETS, SEEDS, STAGES, candidates, identity, plan, rank
-from .sweep_resources import available_resources, capacity, cpu_limit, forecast, original_deadline, profile_loader_settings
+from .sweep_resources import available_resources, capacity, cpu_limit, forecast, profile_loader_settings
 from .integrity import verify_once, check_receipt
 
 
@@ -55,18 +55,20 @@ def run_worker(root, trial, stage, resume=False):
     """Runtime receipts/log IDs stay outside checkpoint configuration equality."""
     config = read_json(root/'trials'/trial/'resolved.json')
     manifest = read_json(root/'staged_sweep.json')
+    execution = dict(threads=manifest.get('execution',{}).get('threads',config['training']['threads']),
+        device=manifest.get('execution',{}).get('assignments',{}).get(trial,config['training']['device']))
     check_receipt(config['data'], root/'verification.json')
     event('worker_context', stage=stage, trial=trial, seed=config['training']['seed'],
-          device=config['training']['device'], remaining_seconds=manifest['deadline']-time.time())
+          device=execution['device'],elapsed_seconds=time.time()-manifest['started'])
     if stage != 'test':
         from .train import train
         from .staged_validation import StageValidation
-        policy = StageValidation(stage,BUDGETS[stage],root/'monitor_subset.json',manifest['deadline']-1800)
+        policy = StageValidation(stage,BUDGETS[stage],root/'monitor_subset.json')
         result = train(config['data'], config['output'], config['training'],
             resume=str(Path(config['output'])/'latest.pt') if resume else None,
             max_updates=BUDGETS[stage], expected_model=config['model'], launch_config=config,
-            logging_mode='plain', trial_id=f'stage{stage}/{trial}/seed{config["training"]["seed"]}/{config["training"]["device"]}',
-            verification_receipt=root/'verification.json',staged_policy=policy)
+            logging_mode='plain', trial_id=f'stage{stage}/{trial}/seed{config["training"]["seed"]}/{execution["device"]}',
+            verification_receipt=root/'verification.json',staged_policy=policy,execution=execution)
         return int(result['interrupted'] or not (Path(config['output']).parent/stage/'selection.json').exists())
     with open(Path(config['output'])/'.training.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -93,10 +95,10 @@ def evaluate_selected(root, trial, config, manifest):
     stopped = Event()
     class Cancellation:
         def cancelled(self):
-            return stopped.is_set() or time.time() >= manifest['deadline']-1800
+            return stopped.is_set()
     previous = {s:signal.signal(s, lambda *_:stopped.set()) for s in (signal.SIGTERM, signal.SIGINT)}
-    device = config['training']['device']
-    torch.set_num_threads(config['training']['threads'])
+    device = manifest.get('execution',{}).get('assignments',{}).get(trial,config['training']['device'])
+    torch.set_num_threads(manifest.get('execution',{}).get('threads',config['training']['threads']))
     saved = load_checkpoint(selected['checkpoint'])
     if saved['config'] != config['training'] or saved['data_manifest_sha256'] != manifest['data_manifest_sha256']:
         raise ValueError('Test checkpoint provenance mismatch')
@@ -111,6 +113,8 @@ def evaluate_selected(root, trial, config, manifest):
             lambda_short=config['training']['lambda_short'], lambda_long=config['training']['lambda_long'],
             physics_dtype=config['training']['physics_dtype'])
         synchronize(device)
+        if stopped.is_set():
+            raise InterruptedError('Test evaluation interrupted')
         if report['status'] != 'measured' or report['coverage']['fraction'] != 1:
             raise ValueError('Incomplete test coverage')
         atomic_json(root/'trials'/trial/'test.json', dict(selection=selected, split='test',
@@ -166,29 +170,14 @@ def initialize(root, args, devices, started):
     provenance = dict(data=str(args.data.resolve()), data_manifest_sha256=digest(args.data/'manifest.json'),
                       devices=devices, threads=args.threads, code=code_provenance(), runtime=runtime_versions())
     if args.resume:
-        manifest, state = read_json(path), read_json(root/'state.json')
-        if any(manifest[k] != v for k,v in provenance.items()):
-            raise ValueError('Resume requires identical data, code, runtime, devices and threads')
-        if args.budget_hours != manifest['budget_hours']:
-            raise ValueError('Resume cannot change the original wall-clock budget')
-        for trial, expected in manifest['configs'].items():
-            if digest(root/'trials'/trial/'resolved.json') != expected:
-                raise ValueError('Resolved configuration changed')
-        for row in state['trials'].values():
-            for stage, result in row['stages'].items():
-                if stage != 'test' and result['status'] == 'complete':
-                    for kind in ('best','latest'):
-                        r = result['result']
-                        if digest(r[kind+'_checkpoint']) != r[kind+'_sha256']:
-                            raise ValueError('Archived checkpoint changed')
-        # A new allocation can shorten, never extend, the original deadline.
-        manifest['deadline'] = min(manifest['deadline'], original_deadline(started, args.budget_hours))
-        atomic_json(path, manifest)
-        return manifest, state
+        from .sweep_resume import resume_session
+        return resume_session(root,args,devices,started,inspect)
     if any(p.name != '.coordinator.lock' for p in root.iterdir()):
         raise ValueError('Use a new empty output directory, or --resume')
-    manifest = dict(**provenance, started=started, deadline=original_deadline(started,args.budget_hours),
-        budget_hours=args.budget_hours, baseline_commit=BASELINE_COMMIT, baseline_sha256=digest(BASELINE),
+    manifest = dict(**provenance, started=started,
+        sessions=[dict(id=f'session-{time.time_ns()}',started=started,code=provenance['code'],runtime=provenance['runtime'],
+                       devices=devices,threads=args.threads,requested_concurrency=args.concurrency,
+                       slurm_job_id=os.environ.get('SLURM_JOB_ID'),status='initializing')], baseline_commit=BASELINE_COMMIT, baseline_sha256=digest(BASELINE),
         metric='normalized_supervised_mse_all_heads', configs={}, plan=plan(),
         cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'))
     state = dict(trials={}, plans={}, rankings={}, registry={}, adjustments=[], status='initializing',
@@ -214,14 +203,14 @@ def preflight(root, baseline, slots, threads, manifest, current, stopped, name):
             worker_dir = folder/wid
             worker_dir.mkdir()
             config = copy.deepcopy(baseline)
-            config['training']['device'] = device
+            config['training'].update(device=device,threads=threads)
             config['output'] = str(worker_dir/'run')
             atomic_json(worker_dir/'resolved.json', config)
             specs[wid] = dict(worker_id=wid, worker_dir=str(worker_dir), barrier_dir=str(folder/'barriers'),
                 config_sha256=digest(worker_dir/'resolved.json'), data_manifest_sha256=manifest['data_manifest_sha256'],
-                warmup_updates=200, measured_updates=50, barrier_timeout=max(1,min(3600,manifest['deadline']-time.time()-1800)),
+                warmup_updates=200, measured_updates=50, barrier_timeout=None,
                 verification_receipt=str(root/'verification.json'))
-    current[0] = PhaseRunner(folder, specs, threads, max(1,min(3600,manifest['deadline']-time.time()-1800)), absolute_deadline=manifest['deadline']-1800)
+    current[0] = PhaseRunner(folder, specs, threads, timeout=None)
     if stopped[0]:
         raise InterruptedError('Stopped before preflight')
     return current[0].run()
@@ -241,6 +230,8 @@ def register(root, config, state, manifest, slots):
     cfg['training']['device'] = min(slots, key=lambda d:(assigned.count(d)/slots[d], d))
     atomic_json(folder/'resolved.json', cfg)
     manifest['configs'][trial] = digest(folder/'resolved.json')
+    if 'execution' in manifest:
+        manifest['execution']['assignments'][trial]=cfg['training']['device']
     state['registry'][key] = trial
     state['trials'][trial] = dict(attempts=[], stages={})
     return trial
@@ -285,7 +276,7 @@ def summarize_seeds(results):
 def report(root, manifest, state):
     tests = [r['stages']['test']['result'] for r in state['trials'].values() if r['stages'].get('test',{}).get('status')=='complete']
     value = dict(status=state['status'], elapsed_seconds=time.time()-manifest['started'],
-        remaining_seconds=max(0,manifest['deadline']-time.time()), provenance=manifest, plans=state['plans'],
+        provenance=manifest, plans=state['plans'],
         rankings=state['rankings'], adjustments=state['adjustments'], resources=state.get('resources'),
         forecast=state.get('forecast'), loader_profile=state.get('loader_profile'), trials=state['trials'], seed_summary=summarize_seeds(tests) if len(tests)==12 else None,
         completed_test_runs=len(tests), measurement_definitions=dict(
@@ -328,7 +319,8 @@ def main(argv=None):
     parser.add_argument('--devices', default='0')
     parser.add_argument('--concurrency', type=int, default=12)
     parser.add_argument('--threads', type=int, default=2)
-    parser.add_argument('--budget-hours', type=float, default=48)
+    parser.add_argument('--budget-hours', type=float, default=None, help='Deprecated and ignored; Slurm controls wall time')
+    parser.add_argument('--allow-code-change',action='store_true',help='Acknowledge changed package source on resume; archive provenance')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--worker', help=argparse.SUPPRESS)
@@ -337,16 +329,20 @@ def main(argv=None):
     root = args.output.resolve()
     if args.worker:
         return run_worker(root, args.worker, args.worker_stage, args.resume)
+    if args.budget_hours is not None:
+        print('Warning: --budget-hours is deprecated and ignored; Slurm controls wall time.',file=sys.stderr,flush=True)
+    if args.allow_code_change and not args.resume:
+        parser.error('--allow-code-change requires --resume')
     if args.data is None:
         parser.error('--data is required')
-    if not 1 <= args.concurrency <= 12 or args.threads < 1 or not math.isfinite(args.budget_hours) or args.budget_hours <= .5:
-        parser.error('Concurrency 1..12, positive threads, budget > 0.5 hours required')
+    if not 1 <= args.concurrency <= 12 or args.threads < 1 :
+        parser.error('Concurrency 1..12 and positive threads required')
     devices = validate_devices(args.devices, not args.dry_run)
     baseline = generate_trials(args.data, root, devices, args.threads)['00']
     baseline['training'].update(patience=20001)
     if args.dry_run:
         print(json.dumps(dict(plan=plan(), stage1=candidates('1', baseline,{}), max_concurrency=args.concurrency,
-            devices=devices, threads=args.threads, budget_hours=args.budget_hours, preflight='one probe per device, then actual resource-limited concurrent cohort'),indent=2))
+            devices=devices, threads=args.threads,wall_time_control='Slurm/signals only', preflight='one probe per device, then actual resource-limited concurrent cohort'),indent=2))
         return 0
     if (root == args.data.resolve() or args.data.resolve() in root.parents
             or any((p/'sweep.json').exists() or (p/'benchmark.json').exists() for p in (root,*root.parents))
@@ -366,8 +362,6 @@ def main(argv=None):
             atomic_json(root/'staged_sweep.json',manifest)
             atomic_json(root/'state.json',state)
         try:
-            if time.time() >= manifest['deadline']-1800:
-                raise TimeoutError('Original budget exhausted; deadline is not reset on resume')
             # A surviving worker from a killed coordinator still owns its lock.
             # Never launch a new preflight alongside that old allocation's work.
             for path in root.rglob('.training.lock'):
@@ -386,24 +380,24 @@ def main(argv=None):
             persist()
             resources = available_resources()
             cpu_limit(args.concurrency,args.threads,resources)
-            if 'measurement' not in state:
-                probes = {}
-                for device in devices:
-                    measured=preflight(root,baseline,{device:1},args.threads,manifest,current,stopped,'probe_'+device.replace(':','_'))
-                    probes[device]=measured['workers'][0]
-                slots=capacity(args.concurrency,args.threads,resources,probes)
-                state['resources']=dict(available=resources,requested=args.concurrency,slots=slots,actual=sum(slots.values()),probes=probes)
-                if sum(slots.values()) != args.concurrency:
-                    state['adjustments'].append(dict(reason='CPU/RAM/measured GPU limits',requested=args.concurrency,actual=sum(slots.values())))
-                event('resource_plan',requested=args.concurrency,actual=sum(slots.values()),slots=slots,available=resources)
-                state['loader_profile']=profile_loader_settings(args.data,baseline,slots,resources,manifest['deadline']-1800)
-                state['measurement']=preflight(root,baseline,slots,args.threads,manifest,current,stopped,'concurrent_preflight')
-                persist()
-            else:
-                slots=state['resources']['slots']
-                new_slots=capacity(args.concurrency,args.threads,resources,state['resources']['probes'])
-                if slots != new_slots:
-                    raise ValueError('Allocation capacity changed; existing placement/preflight cannot be reused safely')
+            # Re-probe this allocation, including its actual concurrent cohort.
+            # Historical measurements remain in the metadata archive/session history.
+            probes = {}
+            for device in devices:
+                measured=preflight(root,baseline,{device:1},args.threads,manifest,current,stopped,'probe_'+device.replace(':','_'))
+                probes[device]=measured['workers'][0]
+            slots=capacity(args.concurrency,args.threads,resources,probes)
+            state['resources']=dict(available=resources,requested=args.concurrency,slots=slots,actual=sum(slots.values()),probes=probes)
+            from .sweep_resume import assign_devices
+            assign_devices(root,manifest,slots,args.threads)
+            manifest['sessions'][-1]['resources']=copy.deepcopy(state['resources'])
+            if sum(slots.values()) != args.concurrency:
+                state['adjustments'].append(dict(reason='CPU/RAM/measured GPU limits',requested=args.concurrency,actual=sum(slots.values())))
+            event('resource_plan',requested=args.concurrency,actual=sum(slots.values()),slots=slots,available=resources)
+            state['loader_profile']=profile_loader_settings(args.data,baseline,slots,resources,cancelled=lambda:stopped[0])
+            state['measurement']=preflight(root,baseline,slots,args.threads,manifest,current,stopped,'concurrent_preflight')
+            manifest['sessions'][-1]['measurement']=copy.deepcopy(state['measurement'])
+            persist()
             history={}
             for stage, _, _ in STAGES:
                 if stopped[0]:
@@ -417,38 +411,25 @@ def main(argv=None):
                     state['plans'][stage]=dict(entries=entries,parent_rankings=copy.deepcopy(state['rankings']),rule=plan()['refinement_rule'] if stage=='5' else 'dependent incumbent plus prescribed alternatives')
                     persist()
                 entries=state['plans'][stage]['entries']
-                # Reserve remaining mandatory search, all finals and test. Use worst
+                # Estimate remaining search, all finals and test. Use worst
                 # fresh-start costs for unknown future configurations, not optimistic reuse.
                 jobs=[]
                 for entry in entries:
                     cfg=read_json(root/'trials'/entry['trial']/'resolved.json')
                     completed = max([r.get('result',{}).get('update',0) for r in state['trials'][entry['trial']]['stages'].values() if r.get('status')=='complete'] or [0])
                     remaining=max(0,BUDGETS[stage]-completed)
-                    jobs.append((cfg['training']['device'],remaining,math.ceil(remaining/1000),4 if stage=='6' else 1))
+                    jobs.append((manifest['execution']['assignments'][entry['trial']],remaining,math.ceil(remaining/1000),4 if stage=='6' else 1))
                 placement=[d for d,n in slots.items() for _ in range(n)]
                 for future,_,number in STAGES:
-                    if int(future)>int(stage) and future!='5':
+                    if int(future)>int(stage):
                         jobs += [(placement[i%len(placement)],BUDGETS[future],BUDGETS[future]//1000,4 if future=='6' else 1) for i in range(number)]
                 data_manifest=read_json(root/'data_manifest.json')
                 estimate=forecast(jobs,slots,state['measurement'],data_manifest['windows']['test'],data_manifest['windows']['validation'])
-                # Optional joint refinement is the first work removed. All retained
-                # candidates still have a common 10k budget; finals always have 20k.
-                if stage=='5':
-                    while len(entries)>1 and estimate['total_seconds']>manifest['deadline']-time.time():
-                        dropped=entries.pop()
-                        state['adjustments'].append(dict(stage=stage,removed=dropped,reason='Reserve finals/test/shutdown within deadline'))
-                        jobs.pop(len(entries))
-                        estimate=forecast(jobs,slots,state['measurement'],data_manifest['windows']['test'],data_manifest['windows']['validation'])
                 state['forecast']=estimate
                 persist()
-                event('forecast',stage=stage,remaining_seconds=manifest['deadline']-time.time(),**estimate)
-                if estimate['total_seconds']>manifest['deadline']-time.time():
-                    raise TimeoutError('Measured forecast cannot fit mandatory equal-budget work plus finals/test/reporting reserve')
-                # Stop this stage early enough to preserve future reserved work.
-                future_jobs=jobs[len(entries):]
-                reserved=forecast(future_jobs,slots,state['measurement'],data_manifest['windows']['test'],data_manifest['windows']['validation'])['total_seconds']
+                event('forecast',stage=stage,informational_only=True,**estimate)
                 current[0]=Coordinator(root,manifest,state,sum(slots.values()),command,inspect,max_concurrency=12,
-                    device_limits=slots,deadline=manifest['deadline']-reserved)
+                    device_limits=slots)
                 if stopped[0] or not current[0].run(stage,[e['trial'] for e in entries]):
                     raise RuntimeError(f'Stage {stage} incomplete; no promotion')
                 state['rankings'][stage]=rank([e['trial'] for e in entries],state,stage)
@@ -464,7 +445,7 @@ def main(argv=None):
                 state['frozen_sha256']=digest(root/'final_selections.json')
                 persist()
             current[0]=Coordinator(root,manifest,state,sum(slots.values()),command,inspect,max_concurrency=12,
-                device_limits=slots,deadline=manifest['deadline']-1800)
+                device_limits=slots)
             if stopped[0] or not current[0].run('test',[e['trial'] for e in frozen['selections']]):
                 raise RuntimeError('Final test evaluation incomplete')
             state['status']='complete'
@@ -474,6 +455,7 @@ def main(argv=None):
             event('staged_sweep_incomplete',error=str(error))
             return 1
         finally:
+            manifest['sessions'][-1].update(finished=time.time(),status=state['status'])
             persist()
             report(root,manifest,state)
             for s,h in previous.items():

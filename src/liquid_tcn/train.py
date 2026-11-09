@@ -42,16 +42,24 @@ def weights(config, update):
     return config['lambda_short']*ramp, config['lambda_long']*ramp
 
 
-def precision_check(model, batch, norm, config):
-    """Compare network+physics losses and full parameter gradients; gate optional AMP."""
-    # Probe copies leave trained parameters untouched; restoring RNG makes
-    # this diagnostic neutral to the reproducible training/resume sequence.
-    # Compare full parameter gradients too: similar losses can hide bad grads.
+def precision_check(model, batch, norm, config, *, diagnostic_path=None, context=None, log=None):
+    """Probe copies; finite FP32 differences warn, nonfinite values/AMP still fail."""
     state = rng_state()
     outputs = {}
+    report = dict(context=context or {}, physics_dtype=config['physics_dtype'],
+                  probe_physics_dtype='float64', training_precision='amp' if config['amp'] else 'float32',
+                  status='running')
     modes = ['float64', 'float32'] + (['amp'] if config['amp'] else [])
+    current_mode = None
+    def persist():
+        if diagnostic_path is not None:
+            atomic_json(diagnostic_path, report)
     try:
         for mode in modes:
+            current_mode = mode
+            report[mode] = dict(precision_mode=mode,tolerance=config['amp_rtol'] if mode=='amp' else config['precision_rtol'],
+                relative_loss_error=None,absolute_loss_error=None,relative_gradient_error=None,absolute_gradient_error=None,
+                gradient_norm=None,reference_gradient_norm=None)
             candidate = copy.deepcopy(model).train()
             x, p = norm.normalize('motion', batch['motion']), norm.normalize('properties', batch['properties'])
             if mode == 'float64':
@@ -61,31 +69,57 @@ def precision_check(model, batch, norm, config):
             result = objective(prediction if mode == 'float64' else prediction.float(), batch, norm,
                                lambda_short=config['lambda_short'], lambda_long=config['lambda_long'],
                                supervised=config['supervised'], huber_delta=config['huber_delta'], physics_dtype='float64')
+            if not torch.isfinite(result['loss']).all():
+                raise FloatingPointError(f'Nonfinite {mode} loss')
             backward_objectives(result['supervised'],
                 result['secondary'] if config['lambda_short'] or config['lambda_long'] else None,
                 candidate.parameters(), config['gradient_strategy'], config['pcgrad_eps'])
-            gradient = torch.cat([q.grad.detach().flatten().double() for q in candidate.parameters()])
+            gradient = torch.cat([q.grad.detach().flatten().double() for q in candidate.parameters() if q.grad is not None])
             if not torch.isfinite(gradient).all():
                 raise FloatingPointError(f'Nonfinite {mode} gradient')
-            outputs[mode] = (float(result['loss'].detach()), gradient)
-        reference, grad = outputs['float64']
-        report = {}
-        for mode in modes[1:]:
-            loss, g = outputs[mode]
-            loss_error = abs(loss-reference)/max(abs(reference), 1e-12)
-            gradient_error = float((g-grad).norm()/grad.norm().clamp_min(1e-12))
-            tolerance = config['amp_rtol'] if mode == 'amp' else config['precision_rtol']
-            report[mode] = dict(relative_loss_error=loss_error, relative_gradient_error=gradient_error, tolerance=tolerance)
-            if max(loss_error, gradient_error) > tolerance:
-                raise ValueError(f'{mode} failed float64 precision gate: {report[mode]}')
+            loss, gradient_norm = float(result['loss'].detach()), float(gradient.norm())
+            if not math.isfinite(gradient_norm):
+                raise FloatingPointError(f'Nonfinite {mode} gradient norm')
+            outputs[mode] = (loss, gradient)
+            report[mode].update(precision_mode=mode, loss=loss, gradient_norm=gradient_norm,
+                                tolerance=config['amp_rtol'] if mode=='amp' else config['precision_rtol'])
+            if mode != 'float64':
+                reference, grad = outputs['float64']
+                absolute_loss = abs(loss-reference)
+                absolute_gradient = float((gradient-grad).norm())
+                loss_error = absolute_loss/max(abs(reference), 1e-12)
+                gradient_error = absolute_gradient/max(float(grad.norm()), 1e-12)
+                if not all(math.isfinite(v) for v in (absolute_loss,absolute_gradient,loss_error,gradient_error)):
+                    raise FloatingPointError(f'Nonfinite {mode} precision difference')
+                tolerance = report[mode]['tolerance']
+                exceeded = max(loss_error,gradient_error)>tolerance
+                report[mode].update(relative_loss_error=loss_error,absolute_loss_error=absolute_loss,
+                    relative_gradient_error=gradient_error,absolute_gradient_error=absolute_gradient,
+                    reference_gradient_norm=float(grad.norm()),reference_loss=reference,
+                    tolerance_exceeded=exceeded,status='warning' if exceeded and mode=='float32' else 'failed' if exceeded else 'passed')
+                persist()  # Persist evidence before either the warning or rejection.
+                if exceeded:
+                    if mode == 'amp':
+                        raise ValueError(f'amp failed float64 precision gate: {report[mode]}')
+                    warning = dict(event='precision_warning',severity='warning',context=report['context'],**report[mode])
+                    if log is not None:
+                        log.emit('precision_warning',severity='warning',context=report['context'],**report[mode])
+                    else:
+                        print(json.dumps(warning,allow_nan=False),flush=True)
+        report['status'] = 'warning' if report['float32']['tolerance_exceeded'] else 'passed'
+        persist()
         return report
+    except BaseException as error:
+        report.update(status='failed',failure=dict(precision_mode=current_mode,error_type=type(error).__name__,message=str(error)))
+        persist()
+        raise
     finally:
         restore_rng(state)
 
 
 def train(data, output, configuration=None, resume=None, max_updates=None,
           expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone',
-          runtime_hooks=None, verification_receipt=None, staged_policy=None):
+          runtime_hooks=None, verification_receipt=None, staged_policy=None, execution=None):
     """Logging is a runtime option, deliberately outside checkpoint configuration.
 
     Optional runtime_hooks observe ready/update/checkpoint boundaries; they are
@@ -117,7 +151,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
         log.emit('startup', output=str(output), resume=str(resume) if resume else None,
                  scheduler_horizon=config['updates'])
         return _train(data, output, configuration, resume, max_updates, expected_model,
-                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt, staged_policy)
+                      launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt, staged_policy, execution)
     except BaseException as error:
         log.emit('failure', error_type=type(error).__name__, error=str(error))
         raise
@@ -129,7 +163,7 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
 
 
 def _train(data, output, configuration, resume, max_updates, expected_model,
-           launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt, staged_policy):
+           launch_config, logging_mode, log, stop_requested, received, runtime_hooks, verification_receipt, staged_policy, execution):
     mode = resolve_mode(logging_mode, (configuration or {}).get('progress', True))
     unknown = set(configuration or {}) - set(DEFAULTS)
     if unknown:
@@ -146,10 +180,10 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < minimum):
             raise ValueError(f'{key} must be null or an integer >= {minimum}')
     os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-    torch.set_num_threads(config['threads'])
+    torch.set_num_threads((execution or {}).get('threads',config['threads']))
     random.seed(config['seed']); np.random.seed(config['seed']); torch.manual_seed(config['seed'])
     torch.use_deterministic_algorithms(True)
-    device = torch.device(config['device'])
+    device = torch.device((execution or {}).get('device',config['device']))
     if runtime_hooks is not None:
         runtime_hooks.bind(device, stop_requested, log)
     defer_maintenance = staged_policy is not None or (runtime_hooks is not None and runtime_hooks.defer_maintenance)
@@ -199,10 +233,13 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         saved_config.setdefault('validation_num_workers', None)
         if saved['data_manifest_sha256'] != provenance or saved_config != config:
             raise ValueError('Resume requires identical data provenance and configuration')
+        if (saved.get('format_version')!=1 or saved['normalization']!=norm.stats
+                or ModelConfig(**saved['model_config'])!=model.config or saved['effective_updates']!=total_updates):
+            raise ValueError('Resume normalization, architecture, schedule or serialization format mismatch')
         model.load_state_dict(saved['model']); optimizer.load_state_dict(saved['optimizer'])
         scheduler.load_state_dict(saved['scheduler']); sampler.load_state_dict(saved['sampler'])
         update, best, stale = saved['update'], saved['best'], saved['stale']
-        restore_rng(saved['rng'])
+        restore_rng(saved['rng'], source_device=saved.get('execution_device',saved_config['device']), destination_device=str(device))
     options = {k: config[k] for k in ('batch_size', 'num_workers', 'prefetch_factor', 'pin_memory', 'seed')}
     loader = make_loader(training, sampler=sampler, **options)
     validation_options = dict(options)
@@ -211,8 +248,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
             validation_options[key] = config['validation_' + key]
     val_loader = make_loader(validation, **validation_options)
     probe = to_device(next(iter(make_loader(training, batch_size=min(2, config['batch_size']), pin_memory=False))), device)
-    checks = precision_check(model, probe, norm, config)
-    atomic_json(output / 'precision.json', checks)
+    checks = precision_check(model, probe, norm, config, diagnostic_path=output/'precision.json',
+        context=dict(checkpoint=str(resume) if resume else None,update=update,device=str(device)),log=log)
     stop = min(total_updates, max_updates) if max_updates is not None else total_updates
     timing = dict(loader_seconds=0., training_seconds=0., validation_seconds=0., transfer_seconds=0., logging_seconds=0., checkpoint_seconds=0., samples=0, updates=0, clipped=0)
     start = time.perf_counter()
@@ -250,7 +287,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         atomic_save(output/name, dict(format_version=1, model=model.state_dict(), model_config=asdict(model.config),
             optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict(),
             phase='supervised' if update < config['pretrain_updates'] else 'physics', update=update, effective_updates=total_updates,
-            rng=rng_state(), sampler=sampler.state_dict(), best=best, stale=stale,
+            rng=rng_state(), execution_device=str(device), sampler=sampler.state_dict(), best=best, stale=stale,
             normalization=norm.stats, config=config, data_manifest_sha256=provenance,
             data_provenance=dict(sources=training.manifest['sources'], windows=training.manifest['windows'],
                                  preparation_config=training.manifest['config']), validation=last_validation,
@@ -262,7 +299,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
 
     initial_update = update
     if staged_policy is not None:
-        staged_policy.attach(model,norm,validation,val_loader,config,output,saved if resume else None,update,save,stop_requested,log,writer)
+        staged_policy.attach(model,norm,validation,val_loader,dict(config,device=str(device)),output,saved if resume else None,update,save,stop_requested,log,writer)
     progress = TrainingProgress(total=stop, initial=update, disable=mode != 'progress')
     previous_phase = None
     try:

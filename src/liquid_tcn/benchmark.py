@@ -87,7 +87,7 @@ class BarrierClient:
                 raise InterruptedError(f'Benchmark aborted at {name}')
             if (self.folder/f'{name}.release.json').exists():
                 break
-            if time.monotonic()-started > self.timeout:
+            if self.timeout is not None and time.monotonic()-started > self.timeout:
                 raise TimeoutError(f'Barrier {name} exceeded {self.timeout} seconds')
             time.sleep(.01)
         self.waits[name] = time.monotonic()-started
@@ -362,7 +362,7 @@ class PhaseRunner:
         active = {}
         phase_start = time.monotonic()
         next_barrier = 0
-        deadline = phase_start+self.timeout
+        deadline = None if self.timeout is None else phase_start+self.timeout
         heartbeat = phase_start
         barrier_dir = self.folder/'barriers'
         barrier_dir.mkdir(exist_ok=True)
@@ -411,8 +411,8 @@ class PhaseRunner:
                         atomic_json(barrier_dir/f'{name}.release.json', dict(monotonic=time.monotonic()))
                         self.log.emit('cohort_release', barrier=name, workers=list(self.specs))
                         next_barrier += 1
-                        deadline = time.monotonic()+self.timeout
-                if time.monotonic() > deadline:
+                        deadline = None if self.timeout is None else time.monotonic()+self.timeout
+                if deadline is not None and time.monotonic() > deadline:
                     raise TimeoutError(f'Phase exceeded {self.timeout}s waiting for {BARRIERS[next_barrier] if next_barrier < len(BARRIERS) else "worker exit"}')
                 if time.monotonic()-heartbeat >= self.heartbeat_seconds:
                     self.log.emit('heartbeat', running=list(active), completed=sum(w['status'] == 'complete' for w in self.state['workers'].values()),

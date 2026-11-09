@@ -186,8 +186,8 @@ def test_plain_logs_signal_checkpoint_exact_continuation(tmp_path, monkeypatch, 
         return result
     # Avoid signaling during the precision probe; this test targets an actual update.
     check = training.precision_check
-    def probe(*args):
-        result = check(*args)
+    def probe(*args, **kwargs):
+        result = check(*args, **kwargs)
         monkeypatch.setattr(training, 'objective', signal_during_update)
         return result
     monkeypatch.setattr(training, 'precision_check', probe)

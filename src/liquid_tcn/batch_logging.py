@@ -28,7 +28,6 @@ class BatchLogger:
         record = dict(timestamp=datetime.now(timezone.utc).isoformat(), event=event,
                       trial_id=self.trial_id, budget=self.budget, **self.state,
                       elapsed_seconds=time.monotonic()-self.start,
-                      remaining_seconds=max(0,float(os.environ['LIQUID_RUN_DEADLINE'])-time.time()) if os.environ.get('LIQUID_RUN_DEADLINE') else None,
                       updates_per_second=(self.state['update']-self.initial)/max(time.monotonic()-self.start, 1e-9))
         record.update(values)
         # JSON escapes newlines/control characters in exceptions and identifiers.

@@ -84,8 +84,8 @@ def test_batch_loader_equivalence_and_receipt(tmp_path):
 
 
 def test_deadline_and_capacity():
-    assert original_deadline(10,48,{})==10+48*3600
-    assert original_deadline(10,48,{'SLURM_JOB_END_TIME':'100'})==100
+    assert original_deadline(10,48,{}) is None
+    assert original_deadline(10,48,{'SLURM_JOB_END_TIME':'100'}) is None
     assert cpu_limit(12,2,dict(cpus=8))==3
     with pytest.raises(ValueError):cpu_limit(12,8,dict(cpus=4))
     worker=dict(peak_rss_kib=1024,memory={'startup':dict(peak_reserved_bytes=100,free_visible_device_bytes=900)})
@@ -93,7 +93,7 @@ def test_deadline_and_capacity():
     w=dict(training=dict(seconds=10,updates=10),validation=dict(seconds=20),startup_including_initial_checkpoint_seconds=2,checkpoint_seconds=1)
     f=forecast([('cpu',1000,1)]*3,{'cpu':2},{'workers':[w]*2},100,100)
     assert f['training_seconds']==2*(3+1000+20+5)*1.25
-    assert f['shutdown_reporting_seconds']==1800
+    assert f['shutdown_reporting_seconds']==0
 
 
 def test_no_test_before_freeze(tmp_path):
@@ -122,11 +122,15 @@ def test_dry_run_is_non_mutating(tmp_path):
     assert not (tmp_path/'out').exists()
 
 
-def test_coordinator_deadline_stops_dispatch(tmp_path):
+def test_coordinator_ignores_historical_deadline(tmp_path):
+    folder=tmp_path/'trials/a'
+    (folder/'console').mkdir(parents=True)
+    atomic_json(folder/'resolved.json',dict(training=dict(device='cpu',seed=1)))
     state=dict(trials={'a':dict(attempts=[],stages={})})
-    c=Coordinator(tmp_path,{'threads':1},state,concurrency=12,max_concurrency=12,deadline=time.time()-1)
-    assert not c.run('1',['a'])
-    assert state['trials']['a']['attempts']==[]
+    c=Coordinator(tmp_path,{'threads':1,'deadline':0},state,concurrency=1,deadline=0,
+        command_factory=lambda *_:[sys.executable,'-c','pass'],inspect=lambda *_:{})
+    assert c.run('1',['a'])
+    assert state['trials']['a']['stages']['1']['status']=='complete'
 
 
 def test_tiny_cpu_staged_lifecycle_and_resume(tmp_path, monkeypatch):
@@ -162,7 +166,7 @@ def test_tiny_cpu_staged_lifecycle_and_resume(tmp_path, monkeypatch):
     worker=dict(peak_rss_kib=1024,memory={},training=dict(seconds=.001,updates=50),
         validation=dict(seconds=.001),startup_including_initial_checkpoint_seconds=.001,checkpoint_seconds=.001)
     monkeypatch.setattr(sweep,'preflight',lambda *args,**kwargs:dict(workers=[worker]))
-    monkeypatch.setattr(sweep,'profile_loader_settings',lambda *args:{})
+    monkeypatch.setattr(sweep,'profile_loader_settings',lambda *args,**kwargs:{})
     class InlineCoordinator:
         def __init__(self,root,manifest,state,*args,**kwargs):
             self.root,self.manifest,self.state=root,manifest,state
@@ -191,9 +195,9 @@ def test_tiny_cpu_staged_lifecycle_and_resume(tmp_path, monkeypatch):
         assert selected['selected_update']<=selected['update']
     assert sweep.main(args+['--resume'])==0
     after=json.loads((tmp_path/'sweep/staged_sweep.json').read_text())
-    deadline=after['deadline']
+    original_code=after['code']
     assert sweep.main(args+['--resume'])==0
-    assert json.loads((tmp_path/'sweep/staged_sweep.json').read_text())['deadline']==deadline
+    assert json.loads((tmp_path/'sweep/staged_sweep.json').read_text())['code']==original_code
     result=json.loads((tmp_path/'sweep/report.json').read_text())
     assert result['completed_test_runs']==12
     assert result['seed_summary']['across_seeds']['full']['/heads/force/rmse_axis/0']['n']==3
@@ -227,7 +231,7 @@ def test_training_matches_reference_collation(tmp_path, monkeypatch):
         for k,v in values.items():assert torch.equal(v,b['optimizer']['state'][param][k])
 
 
-def test_active_deadline_cleanup_is_bounded(tmp_path):
+def test_external_stop_cleanup_is_bounded(tmp_path):
     folder=tmp_path/'trials/a'
     (folder/'console').mkdir(parents=True)
     atomic_json(folder/'resolved.json',dict(training=dict(device='cpu',seed=1)))
@@ -235,8 +239,11 @@ def test_active_deadline_cleanup_is_bounded(tmp_path):
     def worker(*_):
         return [sys.executable,'-c','import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)']
     c=Coordinator(tmp_path,{'threads':1},state,1,worker,deadline=time.time()+.3,shutdown_timeout=.1)
+    from threading import Timer
+    timer=Timer(.3,c.stop);timer.start()
     start=time.monotonic()
     assert not c.run('1',['a'])
+    timer.join()
     assert time.monotonic()-start<3
     assert state['trials']['a']['stages']['1']['status']=='interrupted'
     assert state['trials']['a']['attempts'][0]['exit_code'] is not None

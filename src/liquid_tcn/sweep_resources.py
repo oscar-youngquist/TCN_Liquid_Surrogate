@@ -64,11 +64,8 @@ def capacity(requested, threads, resources, probes):
 
 
 def original_deadline(start, hours, environment=None):
-    env = os.environ if environment is None else environment
-    deadline = start+hours*3600
-    if env.get('SLURM_JOB_END_TIME'):
-        deadline = min(deadline, float(env['SLURM_JOB_END_TIME']))
-    return deadline
+    """Compatibility shim: allocation wall time is enforced only by Slurm."""
+    return None
 
 
 def forecast(jobs, slots, measurements, test_windows, validation_windows):
@@ -101,14 +98,14 @@ def forecast(jobs, slots, measurements, test_windows, validation_windows):
         queue[i] += cost*1.25
     training = max((max(v) for v in queues.values()), default=0.)
     tests = math.ceil(12/sum(slots.values()))*(setup+validation*test_windows/max(1,validation_windows))*1.25
-    return dict(training_seconds=training, test_seconds=tests, shutdown_reporting_seconds=1800,
-                total_seconds=training+tests+1800, per_update_seconds=update,
+    return dict(training_seconds=training, test_seconds=tests, shutdown_reporting_seconds=0,
+                total_seconds=training+tests, per_update_seconds=update,
                 full_validation_seconds=validation, subset_check_seconds_estimate=.05*validation,
                 subset_worker_seconds=subset_total,full_validation_worker_seconds=full_total,
                 endpoint_worker_seconds=endpoint_total,shortlist_worker_seconds=shortlist_total,checkpoint_worker_seconds=checkpoint_total,safety_factor=1.25)
 
 
-def profile_loader_settings(data, baseline, slots, resources, deadline):
+def profile_loader_settings(data, baseline, slots, resources, deadline=None, cancelled=lambda: False):
     """Small CPU/RAM-bounded loader matrix; measurements never mutate configs."""
     from .dataset import WindowDataset, make_loader, close_loader
     import torch
@@ -125,16 +122,16 @@ def profile_loader_settings(data, baseline, slots, resources, deadline):
         if required_cpu > resources['cpus'] or required_ram > resources['available_ram_bytes']*.4:
             records.append(dict(workers=workers,prefetch=prefetch,status='skipped',reason='CPU/RAM limit',estimated_buffer_bytes=required_ram))
             continue
-        if time.time() >= deadline:
-            raise TimeoutError('Deadline during loader profiling')
+        if cancelled():
+            raise InterruptedError('Loader profiling interrupted')
         loader=make_loader(dataset,batch_size=batch_size,num_workers=workers,prefetch_factor=prefetch,
             pin_memory=False,sampler=range(min(len(dataset),16*batch_size)))
         start=time.monotonic(); windows=0
         try:
             for batch in loader:
                 windows += len(batch['motion'])
-                if time.time() >= deadline:
-                    raise TimeoutError('Deadline during loader profiling')
+                if cancelled():
+                    raise InterruptedError('Loader profiling interrupted')
         finally:
             close_loader(loader)
         elapsed=time.monotonic()-start

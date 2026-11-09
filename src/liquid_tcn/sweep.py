@@ -64,6 +64,7 @@ def code_provenance():
 def worker_environment(threads):
     """Bound each independent worker's math-library pools without remapping GPUs."""
     env = os.environ.copy()
+    env.pop('LIQUID_RUN_DEADLINE', None)
     env.update(OMP_MAX_ACTIVE_LEVELS='1', PYTHONUNBUFFERED='1', OMP_NUM_THREADS=str(threads),
                MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
                NUMEXPR_NUM_THREADS=str(threads))
@@ -237,11 +238,15 @@ class Coordinator:
         self.concurrency, self.command_factory, self.inspect = concurrency, command_factory, inspect
         self.heartbeat_seconds = heartbeat_seconds
         self.stopping = False
-        self.deadline, self.device_limits, self.shutdown_timeout = deadline, device_limits, shutdown_timeout
+        self.device_limits, self.shutdown_timeout = device_limits, shutdown_timeout  # deadline is ignored.
         self.stop_time = None
 
     def stop(self, number=None, frame=None):
         self.stopping = True
+
+    def trial_device(self, trial_id):
+        return self.manifest.get('execution',{}).get('assignments',{}).get(
+            trial_id, read_json(self.root/'trials'/trial_id/'resolved.json')['training']['device'])
 
     def persist(self):
         atomic_json(self.root/'state.json', self.state)
@@ -252,8 +257,6 @@ class Coordinator:
         heartbeat = time.monotonic()
         try:
             while pending or active:
-                if self.deadline is not None and time.time() >= self.deadline:
-                    self.stop()
                 while pending and len(active) < self.concurrency and not self.stopping:
                     position = 0
                     if self.device_limits:
@@ -261,8 +264,8 @@ class Coordinator:
                         for _, _, _, a in active.values():
                             occupied[a['device']] = occupied.get(a['device'], 0)+1
                         eligible = [i for i, t in enumerate(pending) if occupied.get(
-                            read_json(self.root/'trials'/t/'resolved.json')['training']['device'], 0) < self.device_limits.get(
-                            read_json(self.root/'trials'/t/'resolved.json')['training']['device'], 0)]
+                            self.trial_device(t), 0) < self.device_limits.get(
+                            self.trial_device(t), 0)]
                         if not eligible:
                             if not active:
                                 raise ValueError('No resource slot for pending trial')
@@ -291,14 +294,12 @@ class Coordinator:
                     config_path = self.root/'trials'/trial_id/'resolved.json'
                     if config_path.exists():
                         c = read_json(config_path)['training']
-                        attempt.update(device=c['device'], seed=c['seed'])
+                        attempt.update(device=self.trial_device(trial_id), seed=c['seed'])
                     row['attempts'].append(attempt)
                     row['stages'][stage] = dict(status='running')
                     self.persist()
                     handle = open(console, 'x')
-                    env = worker_environment(self.manifest['threads'])
-                    if self.manifest.get('deadline') is not None:
-                        env['LIQUID_RUN_DEADLINE'] = str(self.manifest['deadline'])
+                    env = worker_environment(self.manifest.get('execution',{}).get('threads',self.manifest['threads']))
                     try:
                         process = subprocess.Popen(self.command_factory(self.root, trial_id, stage, checkpoint.exists()),
                                                    stdout=handle, stderr=subprocess.STDOUT, env=env)
@@ -332,6 +333,8 @@ class Coordinator:
                                    finished=datetime.now(timezone.utc).isoformat())
                     result = None
                     try:
+                        if attempt.get('stop_requested'):
+                            raise InterruptedError('Worker termination was requested')
                         if code != 0:
                             # Keep the traceback/OOM details in the separate console log.
                             with open(attempt['console'], 'rb') as stream:
@@ -358,7 +361,6 @@ class Coordinator:
                     event('heartbeat', stage=stage, running=list(active), pending=len(pending),
                           completed=statuses.count('complete'), failed=statuses.count('failed'),
                           elapsed_seconds=None if 'started' not in self.manifest else time.time()-self.manifest['started'],
-                          remaining_seconds=None if self.deadline is None else max(0, self.deadline-time.time()),
                           workers={t: {k:a.get(k) for k in ('device','seed','started')} for t, (_,_,_,a) in active.items()})
                     heartbeat = time.monotonic()
                 if active:

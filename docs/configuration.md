@@ -72,7 +72,7 @@ For a 20-epoch run, set `epochs: 20` and choose `pretrain_updates`/`ramp_updates
 | `pcgrad_eps` | 1e-12 | Positive finite additive epsilon in the projection denominator `||g_supervised||² + eps`. |
 | `physics_dtype` | `"float64"` | `"float32"` or `"float64"` for de-normalization and discrete calculations outside autocast. |
 | `amp` | false | Enable BF16 network autocast after a startup precision gate. Parameters and optimizer state remain FP32. No FP16 mode is provided. |
-| `precision_rtol` | 0.005 | Maximum relative loss and global parameter-gradient-norm difference for FP32 versus float64 startup checks. |
+| `precision_rtol` | 0.005 | Warning threshold for relative loss and full gradient-vector error against float64. Finite FP32 exceedances continue; nonfinite values fail. |
 | `amp_rtol` | 0.05 | Corresponding tolerance for optional BF16 versus float64 checks. A failure stops the run. |
 
 The reported total loss is supervised loss plus ramped short and long losses. With `gradient_strategy="pcgrad"`, the optimizer uses the [projected gradient combination](liquid_discrete_constraints.md#gradient-combination), rather than the derivative of that reported total. The weighted physics terms are summed before projection; they are not projected against one another. Every supervised head remains active in all four ablations. Physics uses physical-unit predictions at both endpoints, recorded base motion/mass/gravity, and the [physical scales and fixed-reference conventions](liquid_discrete_constraints.md). A valid default window supplies 41 endpoint states and 40 completed-interval wrenches at predicted indices `1:41`; impulse sums are direct. There is no JVP or instantaneous/next-interval reinterpretation. An empty valid set raises during training; it is never a successful zero-loss batch.
@@ -163,9 +163,15 @@ TensorBoard exposes these as `train/secondary` and `train/pcgrad/*`:
 
 Diagnostics are computed before global clipping and AdamW. They are zero when
 there is no active secondary objective or no shared parameters. During supervised
-pretraining, the secondary backward pass is skipped. The precision gate compares
+pretraining, the secondary backward pass is skipped. The precision probe compares
 the actual merged gradients under the selected strategy against float64, using
-the configured final physics weights.
+the configured final physics weights. Finite FP32 tolerance exceedances produce a
+structured warning without changing training precision or hyperparameters. Optional
+AMP retains its acceptance gate; nonfinite losses or gradients always fail.
+`precision.json` is saved before warning or failure and records absolute/relative
+loss and gradient differences, gradient norms, tolerance, precision mode and
+checkpoint/update context. The probe uses model copies and restores RNG state;
+it does not advance the optimizer or consumed sampler position.
 
 Projection has no persistent optimizer state. Its strategy and epsilon are saved
 with the training configuration, so resume checks enforce the same behavior.
@@ -308,7 +314,7 @@ Explicit `--logging-mode progress` takes precedence over that legacy boolean.
 
 The [staged sweep guide](staged_sweeps.md) documents its launcher options,
 dependent hyperparameter generation, fixed 20,000-update schedule, resource
-preflight and persistent deadline. It derives candidates from the packaged
+preflight and allocation history. It derives candidates from the packaged
 baseline rather than the editable local `combined.json`. Exact generated configs
 are saved under each trial's `resolved.json`; runtime logging, verification receipts
 and timing hooks do not become checkpoint-equality configuration fields.

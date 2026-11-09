@@ -253,7 +253,7 @@ exact endpoint full validation; final runs use patience 3 after the physics ramp
 and select from up to four fully validated shortlist checkpoints. Use
 `scripts/launch_staged_sweep_unity.sh` inside an existing allocation. It supports
 up to twelve independent processes, measures actual concurrent throughput, checks
-CPU/RAM/GPU capacity, and preserves its original deadline on resume. Add `--dry-run`
+CPU/RAM/GPU capacity, and supports resuming across allocations with audited code-change acknowledgement. Add `--dry-run`
 to inspect the initial configurations and dependent stage plan without training.
 
 
