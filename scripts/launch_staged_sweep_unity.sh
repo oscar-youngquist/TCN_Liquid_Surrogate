@@ -2,7 +2,7 @@
 # Run inside an existing allocation and activated environment. GPU indices are
 # logical indices within CUDA_VISIBLE_DEVICES, which this script never changes.
 # Slurm controls wall time. Reuse the original --output with --resume;
-# add --allow-code-change to acknowledge an updated implementation.
+# code or allocation changes require no compatibility acknowledgement.
 set -euo pipefail
 PYTHON="${PYTHON:-python}"
 if [[ "${1:-}" == "--python" ]]; then

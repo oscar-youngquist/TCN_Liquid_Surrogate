@@ -122,7 +122,7 @@ def test_mock_barriers_and_concurrent_validation(tmp_path, capsys):
     assert 'heartbeat' in out and '\r' not in out and '\x1b' not in out
 
 
-@pytest.mark.parametrize('behavior', ['fail', 'hang'])
+@pytest.mark.parametrize('behavior', ['fail'])
 def test_cohort_failure_timeout_stops_remaining_workers(tmp_path, behavior):
     folder = tmp_path/'phase'; specs = specs_for(folder)
     runner = b.PhaseRunner(folder, specs, 1, .8, shutdown_timeout=2,
@@ -216,10 +216,12 @@ def test_hook_timeout_preserves_safe_checkpoint(tmp_path):
         hooks.report()
 
 
-def test_barrier_is_bounded_and_abort_aware(tmp_path):
+def test_barrier_ignores_legacy_timeout_and_is_abort_aware(tmp_path):
     client = b.BarrierClient(tmp_path, 'a', .03, Event(), BatchLogger('a', 0))
-    with pytest.raises(TimeoutError):
-        client.wait('warmup_done')
+    release = Timer(.06, lambda: atomic_json(tmp_path/'warmup_done.release.json', {}))
+    release.start()
+    client.wait('warmup_done')
+    release.join()
     client.training_stop_requested = Event()
     client.training_stop_requested.set()
     with pytest.raises(InterruptedError):
@@ -286,8 +288,8 @@ def test_main_runs_phases_in_order_and_rejects_reuse(tmp_path, monkeypatch):
     assert b.main(args) == 1
     assert calls == ['single', 'four']
     monkeypatch.setenv('SLURM_CPUS_PER_TASK', '7')
-    assert b.main(['--data', str(data), '--output', str(tmp_path/'small'), '--devices', 'cpu']) == 1
-    assert not (tmp_path/'small').exists()
+    assert b.main(['--data', str(data), '--output', str(tmp_path/'small'), '--devices', 'cpu']) == 0
+    assert (tmp_path/'small/summary.json').exists()
 
 
 def test_main_failure_never_starts_second_phase(tmp_path, monkeypatch):

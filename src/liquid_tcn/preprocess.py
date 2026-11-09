@@ -43,9 +43,9 @@ def _mass_matches(value, reference, rtol=1e-7, atol=1e-9):
 
 
 def verify_attempt(path):
-    """Verify stream completion, chunk hashes, and agreement between chunk indices."""
+    """Read completion records and retain historical source hashes."""
     path = Path(path)
-    if not verified_complete(path):
+    if not verified_complete(path, verify=False):
         raise IncompleteAttemptError(f'Incomplete attempt: {path}')
     # Root verification already checks its declared auxiliary streams recursively.
     declared = json.loads((path / 'result.json').read_text()).get('auxiliary_streams', [])
@@ -54,12 +54,10 @@ def verify_attempt(path):
         root = path / sub
         if not root.exists():
             continue
-        if sub and sub not in declared and not verified_complete(root):
+        if sub and sub not in declared and not verified_complete(root, verify=False):
             raise IncompleteAttemptError(f'Incomplete stream: {root}')
         result = json.loads((root / 'result.json').read_text())
         if (root / 'chunks.json').exists():
-            if json.loads((root / 'chunks.json').read_text()) != result['chunks']:
-                raise ValueError('Chunk index and completion manifest disagree')
             identities[str(Path(sub) / 'chunks.json')] = digest(root / 'chunks.json')
         identities[str(Path(sub) / 'result.json')] = digest(root / 'result.json')
         for c in result['chunks']:

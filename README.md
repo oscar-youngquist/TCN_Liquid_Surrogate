@@ -81,7 +81,7 @@ Point preparation at the **top-level output folder of the collection script**. I
 liquid-tcn prepare --root /path/to/liquid_collection/campaign --output data/prepared
 ```
 
-Progress bars show directory scanning, checksum verification, attempt processing,
+Progress bars show directory scanning, source discovery, attempt processing,
 normalization/index assembly, and output hashing. For larger collections, process
 independent attempts in parallel:
 
@@ -103,15 +103,15 @@ liquid-tcn prepare --config configs/prepare.local.json --output data/prepared
 # --root can also override collection_root in that config.
 ```
 
-This works while collection is running. Attempts without a complete `result.json`, including unfinished auxiliary streams, are skipped and listed in `discovery.json`. Completed attempts must pass metadata and checksum verification; corruption is reported and stops preparation. Traversal stops at each attempt so saved source trees and `events/`/`boundaries/` are not mistaken for separate attempts. All verified complete retries are retained.
+This works while collection is running. Attempts without a complete `result.json`, including unfinished auxiliary streams, are skipped and listed in `discovery.json`. Recorded completion and required metadata are read directly; chunk checksums are not audited automatically. Traversal stops at each attempt so saved source trees and `events/`/`boundaries/` are not mistaken for separate attempts. All complete retries are retained.
 
 Automatic collection groups hash the recorded round seed, round number, and payload identity. Matching robots and retries share a group; directory names and the chosen scan root do not affect identity. Seeded whole-group hashing uses `fractions` (default 80%/10%/10%) before windowing. Existing groups retain their assignments as new recordings arrive. `held_out_payloads` lists payload SHA-256 IDs to force into test. Small collections can have empty splits; training requires nonempty training and validation data.
 
-Each preparation is a **fixed snapshot**, not a live dataset: candidate membership and completion decisions are scanned before checksum verification. Attempts completed after those decisions are picked up by a later preparation into a **new output directory**. `discovery.json` records included/skipped/error paths and scan times; `manifest.json` also records the report, exact source hashes and split assignments. If no complete attempts exist yet, preparation reports that and leaves no completed dataset manifest.
+Each preparation is a **fixed snapshot**, not a live dataset: candidate membership and completion decisions are scanned before processing. Attempts completed after those decisions are picked up by a later preparation into a **new output directory**. `discovery.json` records included/skipped/error paths and scan times; `manifest.json` also records the report, exact source hashes and split assignments. If no complete attempts exist yet, preparation reports that and leaves no completed dataset manifest.
 
 For manual split assignments or legacy metadata, `configs/prepare.sources.example.json` retains the explicit `sources` workflow. Each entry supplies an attempt `path`, a collection-family `group`, and optionally `split` (`train`, `validation`, or `test`). Do not combine `sources` and `collection_root`. Related retries/robots must share a group; conflicting assignments and duplicate paths are rejected.
 
-Preparation verifies completion, reconciles chunk indices with result manifests, and checks primary and auxiliary checksums. It reads three streams one chunk at a time, deduplicates by native tick and record sequence, and invokes the episode/interval functions on one 5 ms bin at a time. Old terminal states precede same-time resets; asynchronous resets cannot mix episode histories. Split pieces use a common world moment reference. Native debug recordings are also supported using their stored world impulses, but native-rate data is **not required**.
+Preparation reads completion records and chunk indices without automatic checksum audits. It reads three streams one chunk at a time, deduplicates by native tick and record sequence, and invokes the episode/interval functions on one 5 ms bin at a time. Old terminal states precede same-time resets; asynchronous resets cannot mix episode histories. Split pieces use a common world moment reference. Native debug recordings are also supported using their stored world impulses, but native-rate data is **not required**.
 
 Recorded `z` and held inputs are retained. Missing `z` is reconstructed only from current gravity, base velocity/orientation, and recorded held estimates; missing held values can be recovered from `z`. Neither upcoming acceleration nor instantaneous acceleration reconstruction is used. Unsupported/unselected states, missing grid transitions, incomplete histories, and mass/gravity inconsistencies cannot produce training windows. Episode-wide mass/gravity violations invalidate already indexed windows too.
 
@@ -187,7 +187,6 @@ best.pt                  atomic best fixed-validation-metric checkpoint
 tensorboard/             TensorBoard event files
 metrics.jsonl            per-update losses, valid counts, weights and gradient norm
 validation.json          latest physical-unit and conservation metrics
-precision.json           startup FP32/float64 and optional AMP checks
 profile.json             loader/training time and peak process/device memory
 ```
 
@@ -252,8 +251,8 @@ all twelve checkpoint selections before test evaluation. Recovery checkpoints ru
 exact endpoint full validation; final runs use patience 3 after the physics ramp
 and select from up to four fully validated shortlist checkpoints. Use
 `scripts/launch_staged_sweep_unity.sh` inside an existing allocation. It supports
-up to twelve independent processes, measures actual concurrent throughput, checks
-CPU/RAM/GPU capacity, and supports resuming across allocations with audited code-change acknowledgement. Add `--dry-run`
+up to twelve independent processes with the requested devices and thread counts.
+Resume restores saved progress without provenance, precision, or hardware gates. Add `--dry-run`
 to inspect the initial configurations and dependent stage plan without training.
 
 

@@ -31,13 +31,7 @@ class WindowDataset(Dataset):
         self.input_length = self.rf + c['long_intervals']
         if (self.path / f'{split}.idx').stat().st_size != self.length * INDEX_DTYPE.itemsize:
             raise ValueError('Truncated window index')
-        if verification_receipt is not None:
-            from .integrity import check_receipt
-            check_receipt(self.path, verification_receipt)
-        elif verify:
-            for name, expected in self.manifest['artifacts'].items():
-                if digest(self.path / name) != expected:
-                    raise ValueError(f'Prepared artifact checksum mismatch: {name}')
+        # Legacy verification arguments are ignored; audits are explicit utilities.
 
     def __len__(self):
         return self.length
@@ -194,8 +188,7 @@ class EpochSampler(Sampler):
         return dict(length=self.length, seed=self.seed, epoch=self.epoch, position=self.position)
 
     def load_state_dict(self, state):
-        if state['length'] != self.length or state['seed'] != self.seed:
-            raise ValueError('Sampler identity mismatch')
+        self.seed = state['seed']
         self.epoch, self.position = state['epoch'], state['position']
 
 

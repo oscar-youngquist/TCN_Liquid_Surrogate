@@ -26,8 +26,8 @@ def interior_mask(candidates, boundaries, start, end, history=249, grid_dt=.005,
             (np.minimum(abs(times-left), abs(right-times)) > margin)).all(-1)
 
 
-def stream_rows(path):
-    """Verify and stream a chunk at a time, including empty auxiliary streams."""
+def stream_rows(path, verify=False):
+    """Stream one chunk at a time; checksum auditing is explicitly opt-in."""
     path = Path(path)
     index = path/'chunks.json'
     if index.exists():
@@ -39,7 +39,7 @@ def stream_rows(path):
     previous = (-1., -1)
     sequence = 0
     for chunk in chunks:
-        if digest(path/chunk['file']) != chunk['sha256']:
+        if verify and digest(path/chunk['file']) != chunk['sha256']:
             raise ValueError('Chunk checksum mismatch')
         with np.load(path/chunk['file'], allow_pickle=False) as data:
             arrays = {key: data[key] for key in data.files}
@@ -84,7 +84,7 @@ def audit(path):
                     counts[key] = max(counts[key], float(np.linalg.norm(residual[valid, part], axis=-1).max()))
 
     separate_events = (path/'events').exists()
-    rows = heapq.merge(stream_rows(path), stream_rows(path/'boundaries'),
+    rows = heapq.merge(stream_rows(path, verify=True), stream_rows(path/'boundaries', verify=True),
                       key=lambda r: (float(r['time_s']), int(r['record_sequence'])))
     for d in rows:
         timestamp, ids = float(d['time_s']), d['episode_id']
@@ -119,7 +119,7 @@ def audit(path):
             counts[f'max_{label}_closure_impulse'] = max(counts[f'max_{label}_closure_impulse'],
                                                        float(residual.max(initial=0)))
     if separate_events:
-        for event in stream_rows(path/'events'):
+        for event in stream_rows(path/'events', verify=True):
             for key, field in (('resets', 'reset'), ('terminals', 'terminal'),
                                ('policy_events', 'policy_update'), ('feature_events', 'feature_update')):
                 counts[key] += int(event[field].sum())

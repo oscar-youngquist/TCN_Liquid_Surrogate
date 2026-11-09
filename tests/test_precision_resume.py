@@ -108,26 +108,25 @@ def test_expired_allocation_resume_keeps_completed_trials(tmp_path,monkeypatch):
     old_monitor=copy.deepcopy(old_checkpoint['stage_monitoring'])
     old_code=copy.deepcopy(manifest['code'])
     completed=copy.deepcopy({t:state['trials'][t] for t in ['t005','t006']})
-    # Reproduce the old precision gate failing before any optimizer update.
-    real=training.precision_check
-    monkeypatch.setattr(training,'precision_check',lambda *a,**kw:(_ for _ in ()).throw(ValueError('old float32 gate')))
-    with pytest.raises(ValueError,match='old float32 gate'):sweep.run_worker(root,'t000','2',True)
-    monkeypatch.setattr(training,'precision_check',real)
+    monkeypatch.setattr(training,'precision_check',lambda *a,**kw:pytest.fail('automatic precision probe'))
     state['trials']['t000']['stages']['2']=dict(status='failed',error='old float32 gate')
     state['rankings']['1']=['t000']
     persist()
     assert digest(root/'trials/t000/run/latest.pt')==old_hash
-    new_code=dict(old_code,source_sha256='acknowledged-patch')
-    monkeypatch.setattr(recovery,'code_provenance',lambda:new_code)
+    manifest['code'] = {'source_sha256':'historical-code'}
+    manifest['runtime'] = {'python':'old-runtime'}
+    manifest['devices'] = ['cuda:99']
+    manifest['configs'] = {t:'obsolete-hash' for t in manifest['configs']}
+    persist()
+    import shutil
+    moved = tmp_path/'relocated-sweep'
+    shutil.copytree(root,moved)
+    root = moved
     args.resume=True;args.threads=2;args.concurrency=1;args.budget_hours=.001
-    with pytest.raises(ValueError,match='allow-code-change'):sweep.initialize(root,args,['cpu'],time.time())
-    args.allow_code_change=True
     restored,restored_state=sweep.initialize(root,args,['cpu'],time.time())
-    assert restored['code']==old_code and restored['deadline']==0
-    assert restored['sessions'][-1]['code']==new_code
-    archived=Path(restored['sessions'][-1]['metadata_archive'])
-    assert json.loads((archived/'staged_sweep.json').read_text())['deadline']==0
-    assert json.loads((archived/'state.json').read_text())['trials']['t000']['stages']['2']['status']=='failed'
+    assert restored['deadline']==0 and restored['devices']==['cuda:99']
+    completed=copy.deepcopy({t:restored_state['trials'][t] for t in ['t005','t006']})
+    assert all(r['stages']['2']['result']['update']==4 for r in completed.values())
     assert restored_state['rankings']==state['rankings']
     assert load_checkpoint(root/'trials/t000/run/latest.pt')['stage_monitoring']==old_monitor
     recovery.assign_devices(root,restored,{'cpu':1},2)
@@ -154,4 +153,28 @@ def test_expired_allocation_resume_keeps_completed_trials(tmp_path,monkeypatch):
     # Allocation remapping does not rewrite immutable trial configs.
     recovery.assign_devices(root,restored,{'cuda:0':1},2)
     assert set(restored['execution']['assignments'].values())=={'cuda:0'}
-    assert digest(root/'trials/t000/resolved.json')==restored['configs']['t000']
+    assert restored['configs']['t000']=='obsolete-hash'
+
+
+def test_standalone_resume_without_verification(tmp_path,monkeypatch):
+    from liquid_tcn.ported.storage import atomic_json
+    from liquid_tcn.checkpoint import atomic_save
+    data,manifest=preparation(tmp_path)
+    manifest['artifacts']={k:'obsolete' for k in manifest['artifacts']}
+    atomic_json(data/'manifest.json',manifest)
+    monkeypatch.setattr(training,'precision_check',lambda *a,**kw:pytest.fail('automatic probe'))
+    cfg=dict(updates=4,batch_size=2,threads=1,device='cpu',validation_every=4,
+             checkpoint_every=1,validation_batches=1,pretrain_updates=1)
+    output=tmp_path/'run'
+    training.train(data,output,cfg,max_updates=2)
+    path=output/'latest.pt';saved=load_checkpoint(path)
+    saved['data_manifest_sha256']='obsolete'
+    saved['config']['device']='cuda:99'
+    atomic_save(path,saved)
+    training.train(data,output,dict(device='cpu',weight_decay=.01),resume=path,max_updates=3)
+    result=load_checkpoint(path)
+    assert result['update']==3 and result['sampler']['position']==saved['sampler']['position']+2
+    assert result['config']['batch_size']==2
+    assert result['optimizer']['param_groups'][0]['weight_decay']==.01
+    assert result['scheduler']['last_epoch']==saved['scheduler']['last_epoch']+1
+    assert all(v['step']==3 for v in result['optimizer']['state'].values())

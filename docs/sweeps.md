@@ -134,12 +134,11 @@ between logical GPUs 0 and 1. Assignment stays fixed on resume, so devices can
 have uneven utilization when trials finish at different times. Physical GPU
 numbers from a workstation or scheduler allocation are not logical device indices.
 
-`--concurrency` defaults to 4 and accepts 1–4. `--threads` defaults to 4 and bounds
-PyTorch, OpenMP, MKL, OpenBLAS, and NumExpr threads per worker; DataLoader workers
-remain zero. When `SLURM_CPUS_PER_TASK` is set, concurrency times threads must fit
-that CPU count. The examples use eight total worker threads. Concurrency can be
-reduced on resume without changing trial configs. Devices and threads must remain
-unchanged. The coordinator also uses some CPU and memory for checkpoint inspection.
+`--concurrency` defaults to 4 and accepts positive counts. `--threads` defaults to
+4 and bounds math-library threads per worker; DataLoader workers remain zero.
+The requested settings are honored without allocation admission checks. Devices,
+threads and concurrency can change on resume. The coordinator also uses CPU and
+memory for orchestration.
 
 Four batch-1024 workers may exceed a GPU's memory. OOM is reported as a failure;
 the coordinator never changes batch size, loss weights, precision, or learning
@@ -205,12 +204,11 @@ are per process, not node-wide GPU utilization. Abruptly killed workers may have
 no resource profile; their exit status remains visible rather than reporting zero
 usage as a measurement.
 
-Prepared data is opened read-only. Training checks its artifact checksums. Sweep
-resume additionally checks the manifest hash, resolved configs, baseline snapshot,
-package source fingerprint, and Python/PyTorch/NumPy/CUDA runtime versions. The checkout commit is recorded, including when
-working-tree source differs from that commit. Keep the same code and dependency
-environment for continuation. Unknown or partially initialized output directories
-are rejected. Coordinator and worker locks prevent concurrent writers.
+Prepared data is opened read-only without automatic audits. Resume uses the
+supplied paths and requested devices/threads, restores saved training state and
+skips completed stages. Source, runtime, configuration and checksum metadata are
+not compared. Unknown output directories are not overwritten; coordinator and
+worker locks prevent concurrent writers.
 
 SIGTERM/SIGINT stops dispatch and requests checkpoint-and-exit from active workers.
 Workers finish the current update and any validation already in progress, then

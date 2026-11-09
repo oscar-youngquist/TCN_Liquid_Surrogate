@@ -14,11 +14,12 @@ SEEDS = (1, 2, 3)
 
 
 def identity(config):
-    # Output and placement are operational; device remains fixed once registered.
+    # Paths and execution resources do not create new scientific candidates.
     value = copy.deepcopy(config)
-    for key in ('output', 'resume', 'max_updates'):
+    for key in ('output', 'resume', 'max_updates', 'data'):
         value.pop(key, None)
     value['training'].pop('device', None)
+    value['training'].pop('threads', None)
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 

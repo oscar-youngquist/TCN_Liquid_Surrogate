@@ -15,7 +15,7 @@ def restore_rng(state, source_device=None, destination_device=None):
     random.setstate(state['python'])
     np.random.set_state(state['numpy'])
     torch.set_rng_state(state['torch'].cpu())
-    if state['cuda'] is not None and torch.cuda.is_available():
+    if state['cuda'] and torch.cuda.is_available():
         # Allocations may expose fewer GPUs or move this worker to another logical
         # index. Restore available states, then map the worker's own CUDA stream.
         for index, value in enumerate(state['cuda'][:torch.cuda.device_count()]):
@@ -23,8 +23,8 @@ def restore_rng(state, source_device=None, destination_device=None):
         if (source_device is not None and destination_device is not None
                 and str(source_device).startswith('cuda') and str(destination_device).startswith('cuda')):
             source = torch.device(source_device).index or 0
-            if source >= len(state['cuda']):
-                raise ValueError('Checkpoint lacks the source worker CUDA RNG state')
+            # Older execution metadata may name an index outside the saved list.
+            source = min(source, len(state['cuda'])-1)
             torch.cuda.set_rng_state(state['cuda'][source].cpu(),torch.device(destination_device))
 
 

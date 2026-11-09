@@ -117,6 +117,14 @@ def precision_check(model, batch, norm, config, *, diagnostic_path=None, context
         restore_rng(state)
 
 
+def resume_configuration(saved, overrides):
+    """Saved settings are defaults; supplied fields take precedence."""
+    previous = dict(saved['config']) if saved else {}
+    if saved:
+        previous.setdefault('gradient_strategy', 'sum')
+    return {**DEFAULTS, **previous, **(overrides or {})}
+
+
 def train(data, output, configuration=None, resume=None, max_updates=None,
           expected_model=None, launch_config=None, logging_mode='auto', trial_id='standalone',
           runtime_hooks=None, verification_receipt=None, staged_policy=None, execution=None):
@@ -130,7 +138,8 @@ def train(data, output, configuration=None, resume=None, max_updates=None,
     auto and omitted trial_id means standalone. SIGTERM/SIGINT only set a flag;
     serialization happens after a complete optimizer/scheduler/sampler update.
     """
-    config = dict(DEFAULTS, **(configuration or {}))
+    saved = load_checkpoint(resume) if resume else None
+    config = resume_configuration(saved, configuration)
     log = BatchLogger(trial_id, max_updates or config['updates'])
     stop_requested = Event()
     received = []
@@ -168,7 +177,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     unknown = set(configuration or {}) - set(DEFAULTS)
     if unknown:
         raise ValueError(f'Unknown training configuration fields: {sorted(unknown)}')
-    config = dict(DEFAULTS, **(configuration or {}))
+    saved = load_checkpoint(resume) if resume else None
+    config = resume_configuration(saved, configuration)
     if config['updates'] < 1 or config['validation_every'] < 1 or config['checkpoint_every'] < 1:
         raise ValueError('Positive update/checkpoint/validation counts required')
     if config['gradient_strategy'] not in ('pcgrad', 'sum'):
@@ -190,20 +200,20 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ('latest.pt', 'config.json')) and resume is None:
         raise ValueError('Run exists; supply --resume or use a fresh output')
-    training = WindowDataset(data, 'train', config['cache_size'], verify=True, verification_receipt=verification_receipt)
+    training = WindowDataset(data, 'train', config['cache_size'], verify=False)
     validation = WindowDataset(data, 'validation', config['cache_size'])
     if not len(training) or not len(validation):
         raise ValueError('Training and validation must both have eligible windows in separate collection groups')
-    if expected_model is not None and ModelConfig(**expected_model) != ModelConfig(**training.manifest['model']):
-        raise ValueError('Model configuration differs from prepared window geometry; prepare a matching dataset')
     if config['epochs'] is not None and (not isinstance(config['epochs'], int) or config['epochs'] < 1):
         raise ValueError('epochs must be null or a positive integer')
     # Epoch mode includes the last partial batch. Resolve it once so the
     # learning-rate schedule and checkpoints share the same update horizon.
     total_updates = (config['epochs'] * math.ceil(len(training) / config['batch_size'])
                      if config['epochs'] is not None else config['updates'])
-    norm = Normalization(training.manifest['normalization'])
-    model = LiquidTCN(ModelConfig(**training.manifest['model'])).to(device)
+    if saved and not {'epochs','updates'}.intersection(configuration or {}):
+        total_updates = saved['effective_updates']
+    norm = Normalization(saved['normalization'] if saved else training.manifest['normalization'])
+    model = LiquidTCN(ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
     # LambdaLR expects a multiplier of the optimizer's base pretrain_lr.
     # At the phase boundary switch to physics_lr, then apply the chosen decay.
@@ -220,26 +230,26 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     sampler = EpochSampler(len(training), config['seed'])
     provenance = digest(Path(data)/'manifest.json')
     update, best, stale = 0, float('inf'), 0
-    # Exact continuation requires more than model weights: optimizer moments,
-    # scheduler phase, consumed sampler position, and RNG states must agree.
-    # Reject changed data/configuration rather than silently changing the run.
     if resume:
         saved = load_checkpoint(resume, device)
-        # Checkpoints predating PCGrad used ordinary summed gradients.
-        saved_config = dict(saved['config'])
-        saved_config.setdefault('gradient_strategy', 'sum')
-        saved_config.setdefault('pcgrad_eps', 1e-12)
-        saved_config.setdefault('validation_batch_size', None)
-        saved_config.setdefault('validation_num_workers', None)
-        if saved['data_manifest_sha256'] != provenance or saved_config != config:
-            raise ValueError('Resume requires identical data provenance and configuration')
-        if (saved.get('format_version')!=1 or saved['normalization']!=norm.stats
-                or ModelConfig(**saved['model_config'])!=model.config or saved['effective_updates']!=total_updates):
-            raise ValueError('Resume normalization, architecture, schedule or serialization format mismatch')
         model.load_state_dict(saved['model']); optimizer.load_state_dict(saved['optimizer'])
         scheduler.load_state_dict(saved['scheduler']); sampler.load_state_dict(saved['sampler'])
+        if 'seed' in (configuration or {}):
+            sampler.seed = config['seed']
+        for group in optimizer.param_groups:
+            if 'weight_decay' in (configuration or {}):
+                group['weight_decay'] = config['weight_decay']
+        if 'pretrain_lr' in (configuration or {}):
+            scheduler.base_lrs = [config['pretrain_lr']] * len(optimizer.param_groups)
         update, best, stale = saved['update'], saved['best'], saved['stale']
-        restore_rng(saved['rng'], source_device=saved.get('execution_device',saved_config['device']), destination_device=str(device))
+        schedule_keys = {'pretrain_lr','physics_lr','scheduler','min_lr_ratio','pretrain_updates','updates','epochs'}
+        if any(k in (configuration or {}) and config[k] != saved['config'].get(k) for k in schedule_keys):
+            # Keep the resumed scheduler position, applying explicit new LR settings.
+            rates = [base * learning_rate(scheduler.last_epoch) for base in scheduler.base_lrs]
+            for group, rate in zip(optimizer.param_groups, rates):
+                group['lr'] = rate
+            scheduler._last_lr = rates
+        restore_rng(saved['rng'], source_device=saved.get('execution_device',saved['config']['device']), destination_device=str(device))
     options = {k: config[k] for k in ('batch_size', 'num_workers', 'prefetch_factor', 'pin_memory', 'seed')}
     loader = make_loader(training, sampler=sampler, **options)
     validation_options = dict(options)
@@ -247,9 +257,6 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         if config['validation_' + key] is not None:
             validation_options[key] = config['validation_' + key]
     val_loader = make_loader(validation, **validation_options)
-    probe = to_device(next(iter(make_loader(training, batch_size=min(2, config['batch_size']), pin_memory=False))), device)
-    checks = precision_check(model, probe, norm, config, diagnostic_path=output/'precision.json',
-        context=dict(checkpoint=str(resume) if resume else None,update=update,device=str(device)),log=log)
     stop = min(total_updates, max_updates) if max_updates is not None else total_updates
     timing = dict(loader_seconds=0., training_seconds=0., validation_seconds=0., transfer_seconds=0., logging_seconds=0., checkpoint_seconds=0., samples=0, updates=0, clipped=0)
     start = time.perf_counter()

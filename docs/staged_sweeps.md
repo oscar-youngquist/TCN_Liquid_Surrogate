@@ -22,9 +22,9 @@ bash scripts/launch_staged_sweep_unity.sh \
 
 `--devices 0,1` uses two logical GPUs. `--devices cpu` is available for development.
 These are device indices inside the scheduler's existing visibility mask.
-`--concurrency` is a maximum, from 1 through 12; it is not a promise that twelve
-batch-1024 models fit. CPU affinity, `SLURM_CPUS_PER_TASK`, available host/cgroup
-memory and measured CUDA memory can reduce concurrency. Each process retains its
+`--concurrency` defaults to 12 and accepts any positive count. It limits active
+workers; it does not promise the models fit memory. No resource estimate reduces
+this setting. Each process retains its
 own optimizer, sampler and model. There is no DDP or cross-process gradient sharing.
 
 Append `--resume` with the original data and output paths to continue an interrupted
@@ -33,20 +33,14 @@ budget fields are ignored. `--budget-hours` is accepted only for compatibility,
 with a deprecation warning. No forecast or application timer cancels work or prunes
 candidates. Update limits and validation patience remain active.
 
-Use `--resume --allow-code-change` to acknowledge an implementation update. Resume
-archives metadata under `metadata_history/` before migration and records old/new
-source fingerprints and allocation history in `staged_sweep.json`. Original
-provenance is retained. Dataset identity, normalization, architecture, exact saved
-training configuration, checkpoint integrity and runtime/serialization compatibility
-remain strict; the flag does not waive those checks. A runtime-version mismatch
-requires a compatible environment.
-
-Each allocation reassesses capacity and records current devices, thread counts and
-execution assignments. Valid assignments are retained where possible; execution
-can move without rewriting immutable trial configurations. Model, optimizer,
-scheduler, RNG, consumed sampler position, monitoring/patience state and shortlist
-resume from the checkpoint. Different hardware need not reproduce bitwise results.
-Verified completed stages and matching cached evaluations are reused.
+Resume loads saved progress using the supplied data/output paths and requested
+execution resources. No code-change acknowledgement, provenance comparison,
+checksum audit, precision probe, or hardware preflight runs automatically.
+`--allow-code-change` remains accepted as an ignored legacy argument.
+Saved configuration is the resume default; explicitly supplied settings override
+it. Tensor shape and file-loading errors surface normally. Completed stages,
+rankings, monitoring state, shortlist evaluations and reports remain available.
+Moving a sweep directory rebases its run-owned paths to the supplied output root.
 
 To recover the existing Unity run after updating the installed package, run this
 inside a new allocation with the environment activated:
@@ -58,12 +52,12 @@ bash scripts/launch_staged_sweep_unity.sh \
   --data "$SWEEP_DATA" \
   --output "$SWEEP_OUTPUT" \
   --devices 0 --concurrency 12 --threads 2 \
-  --resume --allow-code-change
+  --resume
 ```
 
 Keep this original output path, rather than creating one from the new
 `${SLURM_JOB_ID}`. The new Slurm submission supplies the new wall-time allowance.
-For the interrupted stage-2 run, verified `t005`/`t006` results are retained and
+For the interrupted stage-2 run, completed `t005`/`t006` results are retained and
 `t000` resumes its saved stage-1 endpoint toward 5,000 updates before promotion.
 No successful results are fabricated from incomplete work.
 
@@ -86,7 +80,7 @@ exist. A dry run does not invent winners or estimate hardware throughput.
 
 ## Configuration and comparisons
 
-The starting point is the packaged, hash-checked `combined_5c7792d.json` described
+The starting point is the packaged `combined_5c7792d.json` described
 in [sweeps.md](sweeps.md). Baseline batch size 1024, model configuration,
 normalization, FP32 network, float64 physics, AdamW and one-way PCGrad are retained.
 The source fingerprint records the actual installed implementation, including
@@ -129,11 +123,10 @@ horizon. Stage 2 inherits the loss winner; stage 3 also inherits LR; stage 4 als
 inherits activation. Each comparison retains its incumbent. Search seed 1 and
 its window ordering are common to all candidates.
 
-Identical configurations reuse `latest.pt`, including optimizer, scheduler, RNG,
-and acknowledged sampler position. Saved device configuration stays fixed after registration; allocation-specific execution placement is recorded separately.
-Changed training settings or seeds start fresh. Output paths and placement are
-excluded from the registry's scientific identity; exact saved training settings,
-including the assigned device, are still checked by the trainer on continuation.
+Continuations restore `latest.pt`, including optimizer, scheduler, RNG and consumed
+sampler position. New scientific candidates or seeds start fresh according to the
+stage plan. Current devices and thread counts control execution. Historical hashes
+and device metadata do not gate loading.
 
 Stage 5 starts with the incumbent, runner-up loss, lower LR, higher LR,
 alternative weights, runner-up loss + alternative weights, runner-up activation
@@ -171,12 +164,11 @@ Monitoring state, patience baseline/stale count and shortlist hashes are embedde
 in resumable `latest.pt`, separately from training configuration equality.
 Superseded shortlist files are removed only after the new latest checkpoint is
 committed. Recovery does not retain every 200-update snapshot. Completed full
-validation passes are cached by checkpoint/subset identity and reused if selection
+validation passes are cached by shortlisted update and reused if selection
 is interrupted; selection/report writes and selected-checkpoint replacement are
 atomic. Keep latest, shortlist, selected best and stage archives when moving runs.
 Standalone and legacy training retain their existing validation/patience behavior.
-Code changes require explicit acknowledgement as described above; existing
-results still undergo integrity and selection-policy checks.
+Code and allocation changes require no compatibility acknowledgement.
 
 Stage 6 freezes the chosen settings and changes only seed and ablation weights:
 full retains both, supervised-only zeros both, short-only zeros long, and long-only
@@ -184,58 +176,26 @@ zeros short. All other settings, including pretraining/ramp and LR schedule,
 remain fixed. Matching seeds therefore match initial weights and sample order.
 Disabling physics does not change the learning-rate trajectory.
 
-## Preflight and allocation limits
+## Execution resources and interruption
 
-Preflight runs the actual trainer for 200 warmup + 50 measured updates, then full
-validation (batch 1024, zero loader workers). It first probes each logical device
-individually to obtain host RSS and CUDA peaks across startup, training and
-validation. It then measures the **actual selected concurrent cohort** using the
-benchmark's failure-aware barriers, with no elapsed-time expiry in staged preflight. Twelve-process throughput is never
-extrapolated from a four-process measurement.
+The coordinator honors the requested devices, concurrency and per-worker threads.
+It does not probe GPUs, estimate capacity, profile loaders, or run a preflight
+benchmark. Choose resources for the allocation; actual CUDA or allocation errors
+surface through worker logs and failed attempt records. The separate
+[concurrency benchmark](benchmark.md) remains available when explicitly requested.
 
-The CPU limit reserves one coordinator CPU when possible. Per-worker math-library
-thread pools are bounded. Capacity uses measured peak host RSS with 25% headroom,
-80% of available host memory, and conservative CUDA reserved-memory/free-memory
-headroom. These estimates do not reserve memory from other processes. If the
-concurrent preflight fails or OOMs, the sweep stops and records the failure; it
-does not silently shrink batches, change precision or retry at a different
-concurrency. Startup GPU peaks are retained before resetting counters.
-Physical-device/MIG utilization telemetry is explicitly unavailable; CUDA reports
-capacity for the visible device or instance.
-
-A bounded loader matrix measures 0/1/2 workers with prefetch factors 2/4 when the
-CPU and estimated buffer-memory budgets permit them. Each setting uses at most
-16 batches, including startup. Results and skipped settings are saved. These
-measurements do not automatically change the baseline's zero-loader-worker
-configuration or invalidate checkpoints.
-
-Forecasts use the slowest measured concurrent worker, full validation duration,
-startup overhead, 200-update recovery writes and monitoring snapshot writes,
-per-device scheduling waves and a 25% time margin. Subset-check cost is conservatively
-estimated at 5% of the measured detailed full-validation pass; it is not an
-independent throughput measurement. Forecasts separately count subset checks,
-one endpoint pass per search candidate, up to four shortlist passes per final run,
-and twelve test passes. Final-stage estimates assume the maximum 20,000 updates.
-Known completed updates are deducted for current-stage continuations; unknown
-future candidates are conservatively costed as fresh runs. Forecasts are
-informational only: there is no shutdown reserve, launch refusal, or candidate
-pruning based on available time. Preflight barriers and loader profiling have no
-application time deadline; worker failures and termination signals still abort them.
-
-SIGTERM/SIGINT stops dispatch and requests checkpointed worker exits. Unresponsive
-children are killed after a bounded 300-second shutdown grace, which starts only
-after a termination request; the last atomic checkpoint remains recoverable.
-Interrupted stages cannot promote. Slurm may kill a process before checkpointing
-finishes, so recovery always uses the last completed atomic checkpoint.
+Slurm controls wall time. SIGTERM/SIGINT stops dispatch and requests checkpointed
+worker exits. Unresponsive children are killed after a 300-second shutdown grace;
+the last completed atomic checkpoint remains recoverable. Interrupted stages
+cannot promote. Update budgets and validation-based patience remain unchanged.
 
 ## Test gate and reports
 
 Only validation drives search and checkpoint selection. After all twelve final
-runs finish, `final_selections.json` freezes their validation-selected checkpoints,
-SHA-256 identities, config hashes, seeds and validation metrics. The coordinator
-stores its hash before dispatching any test worker. Every test worker verifies
-that all twelve final results and checkpoint identities still match that file.
-Test results cannot enter a ranking or trigger further search.
+runs finish, `final_selections.json` records their validation-selected checkpoints
+before any test worker starts. Existing selections and reports are reused without
+hash or configuration comparisons. Test scores never enter rankings or trigger
+further search.
 
 `report.json` retains individual test reports and per-stage validation reports:
 
@@ -260,14 +220,10 @@ An incomplete run has no purported twelve-run aggregate.
 ```text
 staged/
   staged_sweep.json          # Original provenance, session history and execution assignments
-  metadata_history/         # Metadata snapshots before each resume migration
   state.json                # Candidate registry, parents, rankings, attempts, resources
-  verification.json         # Trusted local prepared-data verification receipt
   monitor_subset.json       # Shared fixed stratified validation indices
   baseline.json
   data_manifest.json
-  probe_*/                  # Per-device startup/memory probes
-  concurrent_preflight/     # Actual concurrency measurement and worker console files
   final_selections.json     # Written only after all 12 final runs finish
   report.json
   report.md
@@ -297,12 +253,10 @@ and physics fields. Static metadata and shard maps have bounded process-local
 caches. Sampler progress is acknowledged only after the optimizer consumes a batch.
 There is no change to masks, episode boundaries, physics precision or normalization.
 
-Coordinated runs hash prepared artifacts once, then workers validate a local
-receipt containing the manifest hash and every artifact's inode, size, modification
-and change timestamps. A mismatch aborts. Keep prepared data immutable throughout
-a run. The receipt is trusted coordinator output, not a mechanism for authenticating
-an untrusted dataset or concurrent writers. Standalone training still hashes all
-artifacts. Resume checks the receipt, code, runtime, configs and archived checkpoints.
+Prepared data is opened directly. Historical receipts, hashes, source versions and
+allocation metadata are informational and do not gate training or evaluation.
+Explicit audit helpers in `integrity.py` remain available separately. Process
+locks and atomic writes still prevent concurrent writers and incomplete commits.
 
 Training JSONL uses a persistent buffered stream, flushed at checkpoints, shutdown,
 100 records, or a 10-second interval checked on writes. TensorBoard retains every
@@ -320,43 +274,14 @@ measurements conservative relative to ordinary training.
 
 ## Local verification
 
-The tests include shard-crossing/reordered/repeated samples, receipt invalidation,
-bitwise checkpoint/optimizer parity against ordinary sample collation, exact resume,
-dependent inheritance/deduplication, equal-budget promotion, matched seeds,
-resource caps, wave arithmetic, ignored legacy deadlines, and the test-selection gate.
-A tiny CPU integration test exercises the full six-stage lifecycle, twelve final
-selections, test reports and completed-run resume with reduced test-only budgets. Focused monitoring tests
-check subset reuse, agreement with the existing evaluator, final patience state
-across resume, shortlist selection and reuse of completed full-validation passes.
-The existing sweep/benchmark tests exercise subprocess failures, barriers, signals
-and cleanup. No production sweep is required:
+Focused CPU tests cover direct checkpoint continuation, changed historical
+provenance/devices, completed-trial reuse, monitoring-state restoration, worker
+failure and signal handling. Explicit audit and precision tools remain opt-in;
+training and evaluation do not call them. No production sweep or GPU benchmark
+is needed to exercise these loading paths.
 
-```bash
-python -m pytest -q tests/test_precision_resume.py tests/test_staged_sweep.py tests/test_sweep.py tests/test_benchmark.py
-bash -n scripts/launch_staged_sweep_unity.sh
-```
-
-A small local synthetic loader comparison (724 default-length windows, 64-window
-batches, 71-row shards, zero workers) measured 9,067 windows/s before versus 21,592
-after the batched-fetch change, using the fastest of four in-memory-cache passes.
-This roughly 2.38× result measures loader work, not end-to-end GPU training or disk
-throughput on Unity. See [performance verification](performance_verification.md)
-for training parity, timings and regression results. Twelve-process GPU capacity,
-MIG telemetry, long-run memory behavior and production completion require measurements
-inside the target allocation; they have not been established by CPU tests.
-
-Focused schedule-policy verification (2026-11-06): 27 directly affected staged,
-legacy-sweep and trainer-hook tests passed. The subset test matches both supervised
-MSE and short/long physics losses/counts against the existing evaluator on identical
-windows. The tiny CPU lifecycle covers endpoint promotion, final patience,
-shortlist selection, persisted resume state, cached full-validation reuse and the
-frozen test gate. Bash syntax and diff-whitespace checks passed. No GPU benchmark
-or production sweep was run; production timing and GPU behavior remain unverified.
-
-Recovery verification (2026-11-09): 42 directly affected precision, staged-sweep,
-legacy-sweep and benchmark tests passed. A tiny CPU recovery test verifies an
-expired historical deadline, explicit code-change acknowledgement, preserved
-completed stage-2 results, checkpoint continuation and monitoring state. Precision
-tests cover finite FP32 warnings, nonfinite failures, AMP rejection and unchanged
-model/optimizer/RNG state. Bash syntax and whitespace checks passed. The Unity run
-was not accessed or restarted; allocation remapping on GPU remains unverified.
+The loading simplification was checked with synthetic CPU resumes and directly
+affected trainer, sweep, benchmark-orchestration and loader tests. The checks
+include relocated paths, ignored historical hashes/runtime/device metadata,
+restored update/sampler/optimizer state, and skipped completed trials. Shell syntax
+and whitespace checks passed. No production sweep or GPU benchmark was launched.

@@ -84,7 +84,7 @@ class ChunkWriter:
         atomic_json(self.path/'result.json', dict(metadata, chunks=self.chunks))
 
 
-def verified_complete(path):
+def verified_complete(path, verify=True):
     path = Path(path)
     result_path = path/'result.json'
     if not result_path.exists():
@@ -93,9 +93,9 @@ def verified_complete(path):
     if result.get('status') != 'complete':
         return False
     for chunk in result['chunks']:
-        if not (path/chunk['file']).is_file() or digest(path/chunk['file']) != chunk['sha256']:
+        if not (path/chunk['file']).is_file() or (verify and digest(path/chunk['file']) != chunk['sha256']):
             raise ValueError(f'Corrupt completed attempt: {path}')
     for stream in result.get('auxiliary_streams', []):
-        if not verified_complete(path/stream):
+        if not verified_complete(path/stream, verify=verify):
             return False
     return True

@@ -23,8 +23,6 @@ def monitoring_subset(data, path, seed=1729):
     fingerprint = digest(Path(data)/'manifest.json')
     if path.exists():
         value = json.loads(path.read_text())
-        if value['dataset_sha256'] != fingerprint or value['seed'] != seed:
-            raise ValueError('Monitoring subset provenance changed')
         return value
     ds = WindowDataset(data, 'validation')
     if not len(ds):
@@ -112,17 +110,10 @@ class StageValidation:
     def attach(self, model, norm, dataset, full_loader, config, output, saved, update, save, stopped, log, writer):
         self.model,self.norm,self.dataset,self.full_loader = model,norm,dataset,full_loader
         self.config,self.output,self.save,self.stopped,self.log,self.writer = config,Path(output),save,stopped,log,writer
-        if digest(dataset.path/'manifest.json') != self.subset['dataset_sha256']:
-            raise ValueError('Subset does not match training data')
         prior = (saved or {}).get('stage_monitoring')
         self.state = copy.deepcopy(prior) if prior and prior['stage']==self.stage else dict(
             stage=self.stage,subset_sha256=self.subset_hash,entry_update=update,checks=[],shortlist=[],
             patience_best=None,stale=0,eligibility_update=config['pretrain_updates']+config['ramp_updates'])
-        if self.state['subset_sha256'] != self.subset_hash:
-            raise ValueError('Resume requires identical monitoring subset')
-        for row in self.state['shortlist']:
-            if digest(self.output/row['file']) != row['sha256']:
-                raise ValueError('Shortlist checkpoint changed')
         self.loader = make_loader(dataset,batch_size=config['validation_batch_size'] or config['batch_size'],
                                   num_workers=0,sampler=self.subset['indices'],pin_memory=config['pin_memory'])
 
@@ -203,14 +194,10 @@ class StageValidation:
             if self.cancelled():
                 raise InterruptedError('Selection interrupted; run remains incomplete')
             checkpoint = self.output/row['file']
-            if digest(checkpoint)!=row['sha256']:
-                raise ValueError('Selection checkpoint changed')
             report_path = folder/f'validation-{row["update"]}.json'
             scope = 'shortlist_full' if self.stage=='6' else 'stage_endpoint'
             if report_path.exists():
                 record = json.loads(report_path.read_text())
-                if record['checkpoint_sha256']!=row['sha256'] or record['subset_sha256']!=self.subset_hash:
-                    raise ValueError('Cached selection evaluation provenance mismatch')
             else:
                 saved = load_checkpoint(checkpoint)
                 self.model.load_state_dict(saved['model'])

@@ -1,10 +1,4 @@
-"""Coordinator verification receipts for immutable prepared datasets.
-
-A receipt is local trusted coordinator output, not a replacement for checksums of
-untrusted downloads. Workers check every artifact's inode/size/timestamps and the
-manifest hash. Any change invalidates the receipt; standalone training hashes the
-contents as before. Keep prepared files read-only throughout a coordinated run.
-"""
+"""Opt-in prepared-data audits; training and evaluation never call these helpers."""
 from pathlib import Path
 from .ported.storage import atomic_json, digest
 import json

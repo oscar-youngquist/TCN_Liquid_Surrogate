@@ -71,9 +71,9 @@ For a 20-epoch run, set `epochs: 20` and choose `pretrain_updates`/`ramp_updates
 | `gradient_strategy` | `"pcgrad"` | Conflict-only one-way projection of the summed physics gradient against supervision. `"sum"` uses ordinary gradient addition. |
 | `pcgrad_eps` | 1e-12 | Positive finite additive epsilon in the projection denominator `||g_supervised||² + eps`. |
 | `physics_dtype` | `"float64"` | `"float32"` or `"float64"` for de-normalization and discrete calculations outside autocast. |
-| `amp` | false | Enable BF16 network autocast after a startup precision gate. Parameters and optimizer state remain FP32. No FP16 mode is provided. |
-| `precision_rtol` | 0.005 | Warning threshold for relative loss and full gradient-vector error against float64. Finite FP32 exceedances continue; nonfinite values fail. |
-| `amp_rtol` | 0.05 | Corresponding tolerance for optional BF16 versus float64 checks. A failure stops the run. |
+| `amp` | false | Enable BF16 network autocast. No startup acceptance probe runs. Parameters and optimizer state remain FP32. No FP16 mode is provided. |
+| `precision_rtol` | 0.005 | Tolerance used only by the explicit precision utility; ignored by training. |
+| `amp_rtol` | 0.05 | Tolerance for the explicit BF16 diagnostic utility only; training does not run an acceptance check. |
 
 The reported total loss is supervised loss plus ramped short and long losses. With `gradient_strategy="pcgrad"`, the optimizer uses the [projected gradient combination](liquid_discrete_constraints.md#gradient-combination), rather than the derivative of that reported total. The weighted physics terms are summed before projection; they are not projected against one another. Every supervised head remains active in all four ablations. Physics uses physical-unit predictions at both endpoints, recorded base motion/mass/gravity, and the [physical scales and fixed-reference conventions](liquid_discrete_constraints.md). A valid default window supplies 41 endpoint states and 40 completed-interval wrenches at predicted indices `1:41`; impulse sums are direct. There is no JVP or instantaneous/next-interval reinterpretation. An empty valid set raises during training; it is never a successful zero-loss batch.
 
@@ -103,9 +103,9 @@ Each worker lazily opens its own mappings. Data are copied only for the requeste
 | `patience` | 20 | Stop after this many validation events without sufficient improvement. |
 | `min_delta` | 0.0 | Minimum decrease of the fixed validation selection metric required to count as improvement. |
 
-The selection metric is **normalized supervised MSE over all five heads**, even when Huber training is selected. It never changes with physics weights or training phase. Checkpoints preserve optimizer, scheduler, update/phase, Python/NumPy/Torch RNG, sampler, normalizers, configuration, and data/split provenance. Resume requires identical resolved training settings and dataset manifest. Top-level stop/output/resume paths are not optimizer settings.
+The selection metric is **normalized supervised MSE over all five heads**, even when Huber training is selected. It never changes with physics weights or training phase. Checkpoints preserve optimizer, scheduler, update/phase, Python/NumPy/Torch RNG, sampler, normalizers, configuration, and data/split provenance. Resume defaults to saved settings and normalization, with explicit configuration overrides taking precedence. Dataset/configuration identity is not checked. Top-level stop/output/resume paths are not optimizer settings.
 
-The run saves `launch_config.json` (selected source JSON), `requested_config.json` (training options/device override), and `config.json` (resolved settings, effective duration, architecture, normalization and data identity). `tensorboard/` logs scalar losses, weights, valid counts, learning rate, gradient norm/clipping, per-head validation RMSE/max errors and conservation residuals. TensorBoard is flushed on checkpoint saves, and resume purges future steps. `metrics.jsonl`, `validation.json`, `precision.json`, and `profile.json` provide non-TensorBoard records.
+The run saves `launch_config.json` (selected source JSON), `requested_config.json` (training options/device override), and `config.json` (resolved settings, effective duration, architecture, normalization and data identity). `tensorboard/` logs scalar losses, weights, valid counts, learning rate, gradient norm/clipping, per-head validation RMSE/max errors and conservation residuals. TensorBoard is flushed on checkpoint saves, and resume purges future steps. `metrics.jsonl`, `validation.json`, and `profile.json` provide non-TensorBoard records.
 
 ## Preparation configuration
 
@@ -121,7 +121,7 @@ liquid-tcn prepare --config configs/prepare.local.json --output data/prepared
 
 | Key | Default/example | Meaning |
 |---|---|---|
-| `num_workers` | 0 | Independent attempt-processing processes; zero runs in the main process. Also bounds concurrent verification/output-hash threads. Example files use 4. CLI override: `--workers`. |
+| `num_workers` | 0 | Independent attempt-processing processes; zero runs in the main process. Also bounds concurrent source-reading/output-hash threads. Example files use 4. CLI override: `--workers`. |
 | `progress` | true | Show stage progress and active grid-bin counts. CLI `--no-progress` disables all preparation bars. |
 | `collection_root` | `/data/liquid_collection/campaign` | Recursively discover completed attempts under this directory. Supports a campaign folder, its parent containing multiple campaigns, or one attempt. Mutually exclusive with a nonempty `sources` list. |
 | `sources` | list (manual mode only) | Explicit attempt directories and group/split identities, defined below. Used instead of `collection_root`. |
@@ -135,7 +135,7 @@ Discovery recognizes `attempt-*` directories (including not-yet-initialized atte
 
 All verified complete attempts are included, including successful retries. Automatic group IDs hash `[job.selected.seed, job.selected.round, payload_id]`, excluding robot/policy/attempt names. The collector shares these values across matching robot runs. Identical identities across repeated campaigns are conservatively kept together. This makes assignments independent of directory ordering and stable as new attempts arrive. Discovery requires the recorded seed/round fields; use manual sources for legacy metadata without them.
 
-A scan freezes candidate membership and observed completion decisions before hash verification; it does not watch for new results. `discovery.json` and the final `manifest.json` report paths, reasons, counts and scan times. Later completions require a new preparation destination. A dataset with no eligible training windows still fails explicitly; discovery does not force small groups across splits to make them nonempty.
+A scan freezes candidate membership and observed completion decisions before processing; it does not watch for new results. `discovery.json` and the final `manifest.json` report paths, reasons, counts and scan times. Later completions require a new preparation destination. A dataset with no eligible training windows still fails explicitly; discovery does not force small groups across splits to make them nonempty.
 
 Each manual `sources` entry has:
 
@@ -163,21 +163,15 @@ TensorBoard exposes these as `train/secondary` and `train/pcgrad/*`:
 
 Diagnostics are computed before global clipping and AdamW. They are zero when
 there is no active secondary objective or no shared parameters. During supervised
-pretraining, the secondary backward pass is skipped. The precision probe compares
-the actual merged gradients under the selected strategy against float64, using
-the configured final physics weights. Finite FP32 tolerance exceedances produce a
-structured warning without changing training precision or hyperparameters. Optional
-AMP retains its acceptance gate; nonfinite losses or gradients always fail.
-`precision.json` is saved before warning or failure and records absolute/relative
-loss and gradient differences, gradient norms, tolerance, precision mode and
-checkpoint/update context. The probe uses model copies and restores RNG state;
-it does not advance the optimizer or consumed sampler position.
+pretraining, the secondary backward pass is skipped. Precision comparisons are opt-in through `tools/check_precision.py`; training
+never invokes the probe or requires AMP acceptance. Nonfinite losses/gradients
+during actual optimization still fail. Probe tolerances remain readable for the
+explicit utility and old configuration files.
 
 Projection has no persistent optimizer state. Its strategy and epsilon are saved
-with the training configuration, so resume checks enforce the same behavior.
+with the training configuration, and serve as defaults when resuming.
 Checkpoints created before these fields existed are interpreted as `"sum"` with
-`pcgrad_eps=1e-12`; select those values to resume them. Resuming such a checkpoint
-with `"pcgrad"` is rejected rather than silently changing the training rule.
+`pcgrad_eps=1e-12`; select those values to resume them. An explicit `"pcgrad"` override changes the resumed gradient strategy.
 
 ## Individual training losses
 
@@ -221,7 +215,7 @@ At most one attempt per worker is submitted at a time. Waiting for an earlier
 source can leave some workers idle; this bounds staging and keeps output ordering
 deterministic. A single attempt does not use multiple processing workers.
 
-Checksum verification and final output hashing use bounded thread queues when
+Source reading and final output hashing use bounded thread queues when
 workers are enabled. Source chunks are checked again as they are read. Normalization
 is reduced in a fixed serial order, preserving identical statistics across worker
 counts. The manifest is written only after all processing and verification succeeds.
@@ -314,9 +308,9 @@ Explicit `--logging-mode progress` takes precedence over that legacy boolean.
 
 The [staged sweep guide](staged_sweeps.md) documents its launcher options,
 dependent hyperparameter generation, fixed 20,000-update schedule, resource
-preflight and allocation history. It derives candidates from the packaged
+direct dispatch and allocation history. It derives candidates from the packaged
 baseline rather than the editable local `combined.json`. Exact generated configs
-are saved under each trial's `resolved.json`; runtime logging, verification receipts
+are saved under each trial's `resolved.json`; runtime logging, execution resources
 and timing hooks do not become checkpoint-equality configuration fields.
 
 

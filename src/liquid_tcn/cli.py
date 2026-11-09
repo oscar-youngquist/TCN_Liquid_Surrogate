@@ -16,7 +16,7 @@ def main():
     prep.add_argument('--workers', type=int, help='Parallel attempt processes; 0 runs in the main process')
     prep.add_argument('--no-progress', action='store_true', help='Disable preprocessing progress bars')
     fit = sub.add_parser('train'); fit.add_argument('--data'); fit.add_argument('--output')
-    fit.add_argument('--config', required=True); fit.add_argument('--resume'); fit.add_argument('--max-updates', type=int)
+    fit.add_argument('--config'); fit.add_argument('--resume'); fit.add_argument('--max-updates', type=int)
     fit.add_argument('--device'); fit.add_argument('--dry-run', action='store_true')
     fit.add_argument('--logging-mode', choices=('auto', 'plain', 'progress'), default='auto')
     fit.add_argument('--trial-id', default='standalone')
@@ -42,7 +42,7 @@ def main():
                               discovery=result['discovery']['counts'] if result['discovery'] else None), indent=2)); return
     if args.command == 'train':
         from .train import train, DEFAULTS
-        selected = json.loads(Path(args.config).read_text())
+        selected = json.loads(Path(args.config).read_text()) if args.config else {}
         configuration = dict(selected.get('training', selected))
         if args.device:
             configuration['device'] = args.device
@@ -80,9 +80,7 @@ def main():
     from .dataset import WindowDataset, make_loader
     from .evaluate import evaluate
     torch.set_num_threads(4)
-    if digest(Path(args.data)/'manifest.json') != saved['data_manifest_sha256']:
-        raise ValueError('Evaluation data differs from checkpoint provenance')
-    dataset = WindowDataset(args.data, args.split, verify=True)
+    dataset = WindowDataset(args.data, args.split, verify=False)
     loader = make_loader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)
     model = LiquidTCN(ModelConfig(**saved['model_config'])).to(args.device)
     model.load_state_dict(saved['model'])

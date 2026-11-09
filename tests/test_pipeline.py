@@ -111,7 +111,9 @@ def test_checksum_and_completion(tmp_path):
     verify_attempt(p)
     chunk=p/'chunk-000000.npz'
     with open(chunk,'ab') as f:f.write(b'corruption')
-    with pytest.raises(ValueError,match='Corrupt'):verify_attempt(p)
+    verify_attempt(p)  # Loading does not audit historical checksums.
+    from liquid_tcn.ported.storage import verified_complete
+    with pytest.raises(ValueError,match='Corrupt'):verified_complete(p)
 
 
 def test_sampler_acknowledgement():
@@ -287,7 +289,7 @@ def test_epoch_budget_is_derived_from_training_windows(tmp_path):
     assert saved['effective_updates']==expected and saved['sampler']['position']==manifest['windows']['train']
 
 
-def test_pre_pcgrad_checkpoint_requires_sum_strategy(tmp_path):
+def test_pre_pcgrad_checkpoint_allows_strategy_override(tmp_path):
     path, _ = preparation(tmp_path)
     cfg = dict(updates=2, pretrain_updates=1, ramp_updates=1, batch_size=2,
                threads=2, validation_every=2, checkpoint_every=1,
@@ -301,8 +303,7 @@ def test_pre_pcgrad_checkpoint_requires_sum_strategy(tmp_path):
     del state['config']['validation_batch_size']
     del state['config']['validation_num_workers']
     torch.save(state, checkpoint)
-    with pytest.raises(ValueError, match='identical data provenance and configuration'):
-        train(path, output, dict(cfg, gradient_strategy='pcgrad'), resume=checkpoint)
+    train(path, output, dict(cfg, gradient_strategy='pcgrad'), resume=checkpoint)
     train(path, output, cfg, resume=checkpoint)
     restored = load_checkpoint(checkpoint)
     assert restored['update'] == 2

@@ -51,13 +51,12 @@ bash scripts/benchmark_tcn_concurrency.sh --python /path/to/env/bin/python \
 | `--threads` | `2` | Same math-library/PyTorch intra-op thread limit per worker in both phases |
 | `--warmup-updates` | `200` | Fresh-run updates excluded from throughput measurements |
 | `--measured-updates` | `300` | Consecutive updates measured after warmup |
-| `--barrier-timeout` | `3600` | Maximum seconds to reach/release each cohort barrier; includes work leading to the next barrier |
+| `--barrier-timeout` | `3600` | Ignored legacy option; barriers have no elapsed-time expiry |
 | `--shutdown-timeout` | `300` | Grace period for worker checkpoint-and-exit before a forced kill |
 | `--dry-run` | Off | Print resolved configuration and budgets without running |
 
 Counts must be positive and warmup plus measured updates cannot exceed 20,000.
-Four times `--threads` must fit `SLURM_CPUS_PER_TASK`, when set, and the process's
-CPU affinity. The examples use eight worker math threads in the four-process
+Choose `--threads` for your allocation; no CPU admission check runs. The examples use eight worker math threads in the four-process
 phase. DataLoader workers remain zero, and each worker uses one PyTorch inter-op
 thread. TensorBoard and the coordinator also have some CPU overhead.
 
@@ -68,8 +67,8 @@ an interruption, use a new output directory. Checkpoints are retained for diagno
 
 ## Configuration and execution
 
-Configurations come from `sweep.generate_trials()['00']`, which verifies the
-packaged `combined_5c7792d.json` baseline hash. Only worker output paths differ
+Configurations come from `sweep.generate_trials()['00']` and the packaged
+`combined_5c7792d.json` baseline. Only worker output paths differ
 between the five configs. The supplied data path, logical device, and thread
 count are resolved by the existing sweep generator. The benchmark preserves:
 
@@ -80,7 +79,7 @@ count are resolved by the existing sweep generator. The benchmark preserves:
 
 The existing trainer executes every update. Optional runtime hooks observe timing
 boundaries; they are not training configuration fields or checkpoint state.
-Ordinary training and sweep checkpoint compatibility rules are unchanged.
+Loading uses supplied paths without provenance or precision checks.
 
 For this measurement only, hooks defer scheduled validation and checkpoint
 serialization until measured training has finished. The initial and final
@@ -90,7 +89,7 @@ boundary. It does not change losses, optimizer updates, scheduler progression,
 sampling, or detailed per-update logging. Sweep configs, stage budgets, and
 promotion logic remain unchanged.
 
-Each phase proceeds through four bounded rendezvous points:
+Each phase proceeds through four signal-aware rendezvous points:
 
 1. **Warmup done:** every worker has completed its warmup and synchronized CUDA.
    The coordinator releases all workers into measured training.
@@ -145,8 +144,7 @@ reports validation setup and evaluation duration.
 Results also include startup, warmup, checkpoint, barrier-wait, and total elapsed
 times. `startup_seconds` excludes initial checkpoint serialization;
 `startup_including_initial_checkpoint_seconds` retains the full elapsed startup
-interval, including interpreter imports, checksum verification, model/loader setup,
-and precision checks. These fields and phase totals have overlapping scopes and
+interval, including interpreter imports and model/loader setup. These fields and phase totals have overlapping scopes and
 should not simply be added. Whole-run `profile.json` and
 `BatchLogger.updates_per_second` are not used as benchmark throughput measurements.
 
@@ -176,9 +174,8 @@ record unavailable GPU measurements as null, not zero.
 `benchmark.json` records baseline, package source and checkout commit hashes,
 prepared-manifest hash, Python/PyTorch/NumPy/CUDA versions, GPU identity, CPU
 allocation, and runtime measurement options. The exact baseline and prepared
-manifest are copied alongside it. Each worker's resolved config is hashed and
-checked before execution. The prepared manifest retains normalization, split,
-schema, source, and artifact provenance; the trainer verifies dataset artifacts.
+manifest are copied alongside it. Each worker loads its resolved config directly. The prepared manifest retains normalization, split,
+schema, source, and artifact provenance; the trainer does not audit dataset artifacts.
 
 This benchmark measures the selected GPU and storage under current contention.
 Filesystem caches are not cleared between phases, and no clocks, GPU partitions,
@@ -217,7 +214,7 @@ approximately 60-second heartbeats. There are no progress bars or per-update
 console messages. Detailed loss metrics retain their normal JSONL/TensorBoard
 cadence.
 
-A failed worker, OOM, barrier timeout, or SIGTERM/SIGINT aborts the phase, stops
+A failed worker, OOM, or SIGTERM/SIGINT aborts the phase, stops
 further dispatch, and signals remaining workers. Training writes a checkpoint at
 a completed-update boundary. Workers waiting at barriers observe the abort;
 validation observes it between batches. After the shutdown grace period, a stuck
@@ -230,7 +227,7 @@ never starts the four-worker phase. `summary.json`, phase `state.json`, worker
 
 `tests/test_benchmark.py` covers trial-00 inheritance, independent configuration
 copies, quoted-path dry runs, shared-interval arithmetic, barrier ordering,
-concurrent validation, failure/timeout/interruption cleanup, startup peak
+concurrent validation, failure/interruption cleanup, startup peak
 preservation, and measured timing that excludes barrier waits. Tiny CPU fixtures
 exercise the actual worker subprocess and final-checkpoint evaluator. With hooks
 present, model, optimizer, scheduler, sampler, config, and RNG state match ordinary
@@ -251,10 +248,6 @@ communication is available. Both Bash launchers passed syntax checks. No product
 GPU benchmark or scheduler job was launched.
 
 
-The [staged sweep](staged_sweeps.md) reuses this benchmark's worker and barriers to
-measure its actual resource-limited cohort (up to twelve processes). The standalone
-single-versus-four command remains unchanged. Coordinated benchmark workers now
-share a verified-data receipt; `training.section_costs` separates measured loader,
-transfer, training and logging time. JSONL and TensorBoard are both flushed at the
-warmup and final measured boundaries. Per-worker `profile` includes whole-run
-validation/checkpoint costs and `peak_rss_kib` supports host-memory capacity checks.
+The staged sweep does not launch this benchmark automatically. This standalone
+command measures the requested concurrency without CPU/GPU capacity admission
+checks. Training section costs separate loader, transfer, training and logging.

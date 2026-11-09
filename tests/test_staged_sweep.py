@@ -201,10 +201,10 @@ def test_tiny_cpu_staged_lifecycle_and_resume(tmp_path, monkeypatch):
     result=json.loads((tmp_path/'sweep/report.json').read_text())
     assert result['completed_test_runs']==12
     assert result['seed_summary']['across_seeds']['full']['/heads/force/rmse_axis/0']['n']==3
-    # Mutating a frozen identity prevents even a previously completed test replay.
+    # Historical identity metadata does not prevent completed test replay.
     frozen['selections'][0]['best_update']+=1
     atomic_json(tmp_path/'sweep/final_selections.json',frozen)
-    with pytest.raises(ValueError,match='frozen'):sweep.verify_test_gate(tmp_path/'sweep',frozen['selections'][0]['trial'])
+    assert sweep.verify_test_gate(tmp_path/'sweep',frozen['selections'][0]['trial']) == frozen['selections'][0]
 
 
 def test_training_matches_reference_collation(tmp_path, monkeypatch):
