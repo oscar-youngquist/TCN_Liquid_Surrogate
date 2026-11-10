@@ -272,3 +272,15 @@ For a measured comparison of one versus four workers sharing a GPU, see the
 [standalone concurrency benchmark](docs/benchmark.md). Run
 `scripts/benchmark_tcn_concurrency.sh` inside an existing allocation; it uses sweep
 trial `00`, a 200-update warmup, 300 measured updates, and separate full validation.
+
+## Expanded-dataset full-model and ablation experiment
+
+Use `scripts/launch_experiment_unity.sh` to train the selected full model and
+supervised/short/long ablations with three matched seeds, then automatically assess
+validation-selected checkpoints on held-out data. It reuses the existing trainer,
+shortlist policy and parallel coordinator. Chronological interval metrics, impulses,
+events, tails, longer conservation horizons and approximate mechanical work are
+reported separately from window-weighted metrics.
+
+See [experiment commands and metric definitions](docs/experiments.md) for start,
+resume and assessment-only commands, execution settings, caches and limitations.

@@ -7,7 +7,7 @@ name = "liquid-tcn"
 version = "0.1.0"
 description = "Causal liquid wrench surrogate with validated discrete consistency objectives"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "torch>=2.2", "tensorboard>=2.12", "tqdm>=4.66"]
+dependencies = ["numpy>=1.24", "torch>=2.2", "tensorboard>=2.12", "tqdm>=4.66", "matplotlib>=3.6"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
