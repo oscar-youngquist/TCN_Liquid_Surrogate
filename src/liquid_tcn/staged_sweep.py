@@ -72,49 +72,34 @@ def run_worker(root, trial, stage, resume=False):
 
 
 def evaluate_selected(root, trial, config, manifest):
-    selected = verify_test_gate(root, trial)
-    cached=root/'trials'/trial/'test.json'
-    if cached.exists():
-        result=read_json(cached)
-        return 0
-    event('validation_start',scope='test',trial=trial,update=selected['best_update'])
-    from .checkpoint import load_checkpoint
-    from .dataset import WindowDataset, make_loader, close_loader
-    from .evaluate import evaluate
-    from .model import LiquidTCN, ModelConfig
-    from .normalization import Normalization
-    from .benchmark import CancellableLoader, synchronize
+    """Repeat the selected test-window assessment with cached one-step outputs."""
+    selected=verify_test_gate(root,trial)
+    folder=root/'trials'/trial
+    cached=folder/'test.json'
+    destination=folder/'test_assessment'
+    destination.mkdir(exist_ok=True)
+    if cached.exists() and not (destination/'window_test.json').exists():
+        atomic_json(destination/'window_test.json',read_json(cached)['report'])
     from threading import Event
+    from .assessment import assess_checkpoint
+    from .batch_logging import BatchLogger
     import torch
-    stopped = Event()
-    class Cancellation:
-        def cancelled(self):
-            return stopped.is_set()
-    previous = {s:signal.signal(s, lambda *_:stopped.set()) for s in (signal.SIGTERM, signal.SIGINT)}
-    device = manifest.get('execution',{}).get('assignments',{}).get(trial,config['training']['device'])
+    stopped=Event()
+    previous={s:signal.signal(s,lambda *_:stopped.set()) for s in (signal.SIGTERM,signal.SIGINT)}
+    device=manifest.get('execution',{}).get('assignments',{}).get(trial,config['training']['device'])
     torch.set_num_threads(manifest.get('execution',{}).get('threads',config['training']['threads']))
-    saved = load_checkpoint(selected['checkpoint'])
-    model = LiquidTCN(ModelConfig(**saved['model_config'])).to(device)
-    model.load_state_dict(saved['model'])
-    dataset = WindowDataset(config['data'], 'test')
-    loader = make_loader(dataset, batch_size=1024, num_workers=0, seed=config['training']['seed'])
-    start = time.monotonic()
+    start=time.monotonic()
     try:
-        report = evaluate(model, CancellableLoader(loader, Cancellation()), Normalization(saved['normalization']), device,
-            supervised=config['training']['supervised'], huber_delta=config['training']['huber_delta'],
-            lambda_short=config['training']['lambda_short'], lambda_long=config['training']['lambda_long'],
-            physics_dtype=config['training']['physics_dtype'])
-        synchronize(device)
-        if stopped.is_set():
-            raise InterruptedError('Test evaluation interrupted')
-        if report['status'] != 'measured' or report['coverage']['fraction'] != 1:
-            raise ValueError('Incomplete test coverage')
-        atomic_json(root/'trials'/trial/'test.json', dict(selection=selected, split='test',
-            seconds=time.monotonic()-start, frozen_sha256=digest(root/'final_selections.json'), report=report))
+        result=assess_checkpoint(config['data'],selected['checkpoint'],destination,destination/'shared',
+            config['training'],device,cancelled=stopped.is_set,log=BatchLogger(trial,0),window_only=True)
+        if stopped.is_set():raise InterruptedError('Test evaluation interrupted')
+        if not cached.exists():
+            atomic_json(cached,dict(selection=selected,split='test',seconds=time.monotonic()-start,
+                frozen_sha256=digest(root/'final_selections.json'),report=result))
+        atomic_json(folder/'test_streaming.json',dict(selection=selected,split='test',
+            report=read_json(destination/'streaming/window_test.json')))
     finally:
-        close_loader(loader)
-        for s,h in previous.items():
-            signal.signal(s,h)
+        for s,h in previous.items():signal.signal(s,h)
     return 0
 
 
@@ -293,6 +278,7 @@ def main(argv=None):
     parser.add_argument('--allow-code-change',action='store_true',help='Ignored legacy argument')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--model-config', type=Path, help='Model JSON override for a new sweep')
     parser.add_argument('--worker', help=argparse.SUPPRESS)
     parser.add_argument('--worker-stage', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -308,6 +294,11 @@ def main(argv=None):
     devices = validate_devices(args.devices, not args.dry_run)
     baseline = generate_trials(args.data, root, devices, args.threads)['00']
     baseline['training'].update(patience=20001)
+    from .sweep import read_model_config
+    if args.model_config:
+        baseline['model'] = read_model_config(args.model_config)
+    elif args.resume and (root/'staged_sweep.json').exists():
+        baseline['model'] = read_json(root/'staged_sweep.json').get('model', baseline['model'])
     if args.dry_run:
         print(json.dumps(dict(plan=plan(), stage1=candidates('1', baseline,{}), max_concurrency=args.concurrency,
             devices=devices, threads=args.threads,wall_time_control='Slurm/signals only', preflight='disabled; requested execution resources are used'),indent=2))
@@ -325,6 +316,7 @@ def main(argv=None):
     with open(root/'.coordinator.lock','a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
         manifest,state = initialize(root,args,devices,started)
+        manifest['model'] = baseline['model']
         previous = {s:signal.signal(s,stop) for s in (signal.SIGTERM,signal.SIGINT)}
         def persist():
             atomic_json(root/'staged_sweep.json',manifest)
@@ -375,8 +367,14 @@ def main(argv=None):
             persist()
             current[0]=Coordinator(root,manifest,state,sum(slots.values()),command,inspect,max_concurrency=12,
                 device_limits=slots)
+            for entry in frozen['selections']:
+                stage=state['trials'][entry['trial']]['stages'].get('test',{})
+                if stage.get('status')=='complete' and not (root/'trials'/entry['trial']/'test_streaming.json').exists():
+                    stage['status']='pending_streaming'
             if stopped[0] or not current[0].run('test',[e['trial'] for e in frozen['selections']]):
                 raise RuntimeError('Final test evaluation incomplete')
+            atomic_json(root/'test_streaming_summary.json',summarize_seeds([
+                read_json(root/'trials'/e['trial']/'test_streaming.json') for e in frozen['selections']]))
             state['status']='complete'
             return 0
         except BaseException as error:

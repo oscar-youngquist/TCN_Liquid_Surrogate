@@ -11,6 +11,7 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.utils.data._utils.collate import default_collate
 from .preprocess import INDEX_DTYPE, SCHEMA_VERSION
 from .ported.storage import digest
+from .model import ModelConfig
 
 
 class WindowDataset(Dataset):
@@ -26,12 +27,23 @@ class WindowDataset(Dataset):
         self.pid = None
         self.metadata_cache = OrderedDict()
         self.series = {s['id']: s for s in self.manifest['series']}
-        c = self.manifest['model']
-        self.rf = 1 + 2 * (c['kernel_size'] - 1) * sum(c['dilations'])
-        self.input_length = self.rf + c['long_intervals']
+        c = ModelConfig(**self.manifest['model'])
+        self.rf = c.receptive_field
+        self.input_length = c.input_length
         if (self.path / f'{split}.idx').stat().st_size != self.length * INDEX_DTYPE.itemsize:
             raise ValueError('Truncated window index')
         # Legacy verification arguments are ignored; audits are explicit utilities.
+
+    def check_model(self, config):
+        # Window indices certify real history at preparation time. Different
+        # features are safe on the same windows, but longer histories cannot be
+        # obtained by left-padding or crossing an episode/gap boundary.
+        prepared = ModelConfig(**self.manifest['model'])
+        if (config.receptive_field != self.rf or config.input_length != self.input_length
+                or config.sample_seconds != prepared.sample_seconds):
+            raise ValueError(f'Model needs {config.receptive_field} history samples and '
+                f'{config.input_length} input samples; prepared windows use {self.rf} and '
+                f'{self.input_length}. Prepare a separate dataset with this model configuration.')
 
     def __len__(self):
         return self.length

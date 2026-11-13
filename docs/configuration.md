@@ -12,8 +12,9 @@ All paths in CLI/JSON commands resolve relative to the current working directory
 | `output` | `runs/combined/{timestamp}` | Run log directory. `{timestamp}` expands to `YYYY_MM_DD_HH_MM_SS_ffffffZ` (UTC, with microseconds). Contains selected/resolved configs, best/latest checkpoints, TensorBoard, metrics and profiles. |
 | `resume` | `null` | Trusted checkpoint path to restore, usually an existing run's `latest.pt`. Set `output` to that same concrete run directory to continue its logs. |
 | `max_updates` | `null` | Optional absolute stop update for a short/interrupted run, without changing the scheduler horizon or checkpoint configuration. Resume with this removed or increased. It does not mean “additional updates.” |
-| `model` | object below | Architecture and window geometry; must match the prepared dataset's model section. |
+| `model` | object below | Architecture and window geometry; required history and horizon must match the prepared windows. |
 | `training` | object below | Optimizer, losses, scheduling, loader, precision and logging settings. |
+| `monitoring` | omitted | Optional standalone experiment monitoring policy; see below. |
 
 CLI `--data`, `--output`, `--resume`, `--max-updates`, and `--device` override corresponding values. The launcher selects `GPU` and `CONFIG` only; `GPU=cpu` selects CPU, and `GPU=1` selects `cuda:1` under the current `CUDA_VISIBLE_DEVICES` mapping. `PYTHON` can select an existing interpreter. `--dry-run` prints resolved settings without preparing data or training.
 
@@ -24,10 +25,20 @@ GPU=cpu CONFIG=configs/combined.json bash launch_train.sh --dry-run
 
 ## Model and window geometry
 
-The same `model` object appears in the preparation configuration. The [architecture guide](architecture.md) defines the default network. Changes affecting receptive field or horizon require preparing a matching dataset. A model mismatch fails instead of silently using a different architecture.
+The same `model` object appears in the preparation configuration. The [architecture guide](architecture.md) defines the default network. Changes affecting receptive field or horizon require preparing a matching dataset. Different architectures and feature widths can share data when required history and horizon are the same. Incompatible window dimensions fail rather than introducing padding. The default [pyramid attention variant](pyramid_attention.md) uses the same window geometry as the default TCN.
 
 | Key | Default | Meaning |
 |---|---:|---|
+| `architecture` | `"tcn"` | `"tcn"` or `"tcn_pyramid_attention"`. Missing fields in legacy checkpoints mean TCN. |
+| `sample_seconds` | 0.005 | Sampling period for age-to-step conversion. Prepared recordings currently use 5 ms. |
+| `attention_ages_ms` | `null` | Per-block lists of nonnegative feature ages in milliseconds. Null resolves to the [28-token schedule](pyramid_attention.md#features-and-history) for five blocks. Supply explicit lists for other block counts. Empty block lists omit that block's memory tokens. |
+| `attention_dim` | `null` | Attention projection width; null resolves to `channels`. |
+| `attention_heads` | `null` | Head count; null resolves to 4 when the attention dimension is divisible by 4, otherwise 1. Explicit counts must divide the attention dimension. |
+| `attention_backend` | `"custom"` | Explicit scaled dot-product implementation by default; optional `"sdpa"` uses functional PyTorch SDPA. |
+| `attention_dropout` | 0.0 | Drop combined output features before final projection; disabled in evaluation. Not attention-weight dropout. |
+| `attention_projection_bias` | `false` | Include biases in Q, fused K/V and output projections. |
+| `attention_alpha` | 0.1 | Initial value of the learnable scalar multiplying the attention residual. |
+| `property_conditioning` | `"existing"` | `"film"` adds zero-initialized per-block scale/shift from the shared property embedding; existing conditioning remains the default. See [FiLM and streaming](film_streaming.md). |
 | `property_dim` | 24 | Fixed metadata feature schema below. Production preparation requires 24; a new dimension requires implementing a new property schema. |
 | `embedding_dim` | 32 | Output width of the static property MLP. |
 | `channels` | 64 | Input projection and residual convolution width; also each head's hidden width. |
@@ -35,9 +46,38 @@ The same `model` object appears in the preparation configuration. The [architect
 | `dilations` | `[1,2,4,8,16]` | One dilation per residual block, with two convolutions per block. All entries must be positive integers. |
 | `long_intervals` | 40 | Number of adjacent 5 ms intervals in the long objective. Default: 200 ms and 41 predicted endpoints. A different positive count is an explicit horizon experiment, not equivalent to the default acceptance contract. |
 
-`receptive_field = 1 + 2*(kernel_size-1)*sum(dilations)`; `input_length = receptive_field + long_intervals`. Defaults are 249 and 289. Motion input always has 15 channels in the order `[g_B, u_O_B, omega_B, held_a_B, held_alpha_B]`. Five independent heads predict force, moment, `r_B`, `v_B`, and `S_B`. There is no configurable dropout or temporal/batch normalization because neither is present in this initial architecture.
+For the baseline, `receptive_field = 1 + 2*(kernel_size-1)*sum(dilations)`; pyramid attention additionally includes the largest selected feature lag plus its block receptive field. `input_length = receptive_field + long_intervals`. Both default architectures use 249 and 289. Motion input always has 15 channels in the order `[g_B, u_O_B, omega_B, held_a_B, held_alpha_B]`. Five independent heads predict force, moment, `r_B`, `v_B`, and `S_B`. The baseline has no dropout or normalization layers. The attention variant adds feature-wise LayerNorm and optional output dropout; neither architecture normalizes across time or batches.
 
 The 24 physical property values, in order, are density, Genesis kinematic viscosity, raw Genesis surface-tension coefficient, actual mass, actual rest-density volume, fill-box volume, three interior dimensions, three fill dimensions, three mount translations, mounting quaternion in wxyz order, three geometry scale factors, fill offset, and particle size. `metadata.PROPERTY_FIELDS` names their exact units. Normalization is fitted only on training data. In particular, viscosity is **m²/s**, not Pa·s; no unsupported conversion is performed.
+
+## Standalone subset monitoring
+
+`configs/pyramid_attention.json` matches the 40K full-model experiment's training
+settings and includes this optional top-level object:
+
+```json
+"monitoring": {"policy": "shortlist", "seed": 1729, "subset": null}
+```
+
+`policy` selects the existing experiment shortlist workflow: recovery every 200
+updates, a fixed representative 5% validation subset every 1,000, patience 3
+after `pretrain_updates + ramp_updates`, and full-validation comparison of the
+three best subset checkpoints plus the stopping checkpoint. Supervised normalized
+MSE controls selection; physics objectives are also reported. The policy uses
+these fixed cadences; the example's training cadence values match them. Its
+`training.patience=40001` leaves early stopping to the policy.
+
+`seed` seeds subset selection independently of the training seed. The same seed
+and prepared dataset reproduce the experiment subset. `subset` optionally names
+an existing JSON to copy; null generates the subset. The run stores it in
+`monitor_subset.json` and never resamples on resume. `monitoring.json` preserves
+policy settings for resume without a config file. Selection reports and archived
+checkpoints live in `selection/`, and the winner is copied to `best.pt`.
+
+Without this object, standalone training retains its existing full-validation
+behavior. This option does not change the sweep/experiment coordinators, which
+already supply their own policy. `--max-updates` still interrupts at an absolute
+update without shortening the scheduler or triggering premature final selection.
 
 ## Training duration and optimization
 

@@ -64,7 +64,7 @@ The default network in [`model.py`](../src/liquid_tcn/model.py) consists of:
 3. Five residual blocks with dilations `[1, 2, 4, 8, 16]`. Each block has two
    causal convolutions with kernel size 5 and 64 channels. Its output is
    `x + SiLU(conv2(SiLU(conv1(x))))`.
-4. Five independent `64 → 64 → 3` heads, each with SiLU between linear layers.
+4. Five independent `64 → 64 → 64 → 3` heads, each with SiLU between linear layers.
 
 There is no dropout, batch normalization, or normalization across time.
 Convolutions pad only on the left. The static property embedding is shared across
@@ -81,6 +81,10 @@ contextual_outputs = long_intervals + 1
 Defaults give a receptive field of 249 samples and a 40-interval physics horizon.
 A 289-sample pass therefore yields 41 fully contextual predictions. Outputs from
 the first 248 positions depend on left padding and are discarded during training.
+
+The optional [temporal-pyramid attention variant](pyramid_attention.md) adds sparse
+attention before these heads. It derives context from block receptive fields plus
+selected feature ages; the default schedule retains the same 249-sample history.
 
 ## Predictions and loss alignment
 
@@ -124,3 +128,7 @@ independent caches and warmup counters. Call `reset` after episode resets, gaps,
 invalid held inputs, or payload changes. Until an environment has a full receptive
 field of real samples, its output is NaN with `valid=False`. The package provides
 this inference interface; controller integration and timing are application concerns.
+
+## FiLM and streaming assessment
+
+See [FiLM conditioning and cached one-step assessment](film_streaming.md) for the optional property conditioning, cache lifecycle, measured batch-4096 inference costs, and repeated test assessments. Full-sequence and streaming results use the same validation-selected checkpoints and frozen event definitions. Resume reuses completed full-sequence results and computes missing streaming reports without retraining.

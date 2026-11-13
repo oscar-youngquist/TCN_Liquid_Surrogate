@@ -207,7 +207,7 @@ def evaluate_latest(config, spec, barrier, log, memory):
     from .checkpoint import load_checkpoint
     from .dataset import WindowDataset, make_loader, close_loader
     from .evaluate import evaluate
-    from .model import LiquidTCN, ModelConfig
+    from .model import build_model, ModelConfig
     from .normalization import Normalization
     from .train import weights
     started = time.monotonic()
@@ -217,7 +217,7 @@ def evaluate_latest(config, spec, barrier, log, memory):
     if saved['update'] != expected_update:
         raise ValueError('Benchmark training did not complete its measured updates')
     device = config['training']['device']
-    model = LiquidTCN(ModelConfig(**saved['model_config'])).to(device)
+    model = build_model(ModelConfig(**saved['model_config'])).to(device)
     model.load_state_dict(saved['model'])
     dataset = WindowDataset(config['data'], 'validation', config['training']['cache_size'])
     loader = make_loader(dataset, batch_size=1024, num_workers=0,
@@ -446,8 +446,8 @@ class PhaseRunner:
             self.persist()
 
 
-def resolve_configs(data, output, device, threads):
-    baseline = generate_trials(data, output, [device], threads)['00']
+def resolve_configs(data, output, device, threads, model_config=None):
+    baseline = generate_trials(data, output, [device], threads, model_config)['00']
     configs = {}
     for phase, count in (('single', 1), ('four', 4)):
         configs[phase] = {}
@@ -488,6 +488,7 @@ def main(argv=None):
     parser.add_argument('--barrier-timeout', type=float, default=3600)
     parser.add_argument('--shutdown-timeout', type=float, default=300)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--model-config', type=Path, help='Model JSON override')
     parser.add_argument('--worker-spec', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.worker_spec:
@@ -504,7 +505,8 @@ def main(argv=None):
         if len(devices) != 1:
             raise ValueError('Benchmark requires exactly one logical device for both phases')
         root, data = args.output.resolve(), args.data.resolve()
-        configs = resolve_configs(data, root, devices[0], args.threads)
+        from .sweep import read_model_config
+        configs = resolve_configs(data, root, devices[0], args.threads, read_model_config(args.model_config) if args.model_config else None)
         if args.dry_run:
             print(json.dumps(dict(configs=configs, warmup_updates=args.warmup_updates,
                                   measured_updates=args.measured_updates, max_updates=args.warmup_updates+args.measured_updates,

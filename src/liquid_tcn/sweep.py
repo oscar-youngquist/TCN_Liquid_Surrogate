@@ -77,9 +77,19 @@ def runtime_versions():
     return dict(python=sys.version, torch=torch.__version__, numpy=numpy.__version__, cuda=torch.version.cuda)
 
 
-def generate_trials(data, output, devices, threads):
+def read_model_config(path):
+    """Accept either a model-only JSON or the model section of a run config."""
+    value = read_json(path)
+    from .model import ModelConfig
+    from dataclasses import asdict
+    return asdict(ModelConfig(**value.get('model', value)))
+
+
+def generate_trials(data, output, devices, threads, model_config=None):
     from .train import DEFAULTS
     baseline = read_json(BASELINE)
+    if model_config is not None:
+        baseline['model'] = model_config
     trials = {}
     for number, overrides in enumerate(OVERRIDES):
         trial_id = f'{number:02d}'
@@ -104,7 +114,7 @@ def validate_devices(value, check_available=True):
     return ['cuda:' + str(int(d)) for d in devices]
 
 
-def initialize(root, data, devices, threads, resume):
+def initialize(root, data, devices, threads, resume, model_config=None):
     """Create a run or reopen saved progress using current paths and resources."""
     manifest_path = root/'sweep.json'
     if manifest_path.exists():
@@ -127,7 +137,7 @@ def initialize(root, data, devices, threads, resume):
         raise ValueError('Cannot resume: sweep.json does not exist')
     if any(p.name != '.coordinator.lock' for p in root.iterdir()):
         raise ValueError('Refusing to overwrite an unrelated or partially initialized directory')
-    configs = generate_trials(data, root, devices, threads)
+    configs = generate_trials(data, root, devices, threads, model_config)
     # The prepared manifest includes schema, split, normalization, source hashes,
     # and every artifact checksum. Artifact hashes are historical metadata.
     (root/'baseline.json').write_bytes(BASELINE.read_bytes())
@@ -399,6 +409,7 @@ def main(argv=None):
     parser.add_argument('--devices', default='0', help='Visible logical GPU indices, e.g. 0 or 0,1; cpu for testing')
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--model-config', type=Path, help='Model JSON override for a new sweep')
     args = parser.parse_args(argv)
     if args.concurrency < 1 or args.threads < 1:
         parser.error('concurrency must be positive and threads must be positive')
@@ -406,7 +417,7 @@ def main(argv=None):
     try:
         devices = validate_devices(args.devices, not args.dry_run and args.stage != 'report')
         if args.dry_run:
-            configs = generate_trials(args.data, root, devices, args.threads)
+            configs = generate_trials(args.data, root, devices, args.threads, read_model_config(args.model_config) if args.model_config else None)
             print(json.dumps(dict(stage=args.stage, concurrency=args.concurrency, budgets=BUDGETS,
                                   baseline_commit=BASELINE_COMMIT, trials=configs), indent=2))
             return 0
@@ -421,7 +432,7 @@ def main(argv=None):
                 write_report(root, manifest, state)
                 event('report', path=str(root/'report.json'))
                 return 0
-            manifest, state = initialize(root, args.data.resolve(), devices, args.threads, args.resume)
+            manifest, state = initialize(root, args.data.resolve(), devices, args.threads, args.resume, read_model_config(args.model_config) if args.model_config else None)
             # The worker lock prevents a surviving worker from sharing its output
             # with a retry, even if the previous coordinator was killed.
             for row in state['trials'].values():

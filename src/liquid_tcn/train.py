@@ -16,7 +16,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from .batch_logging import BatchLogger, resolve_mode, MetricWriter, write_scalars
 from .progress import TrainingProgress
-from .model import LiquidTCN, ModelConfig
+from .model import build_model, ModelConfig
 from .normalization import Normalization
 from .dataset import WindowDataset, EpochSampler, make_loader, to_device, close_loader
 from .objectives import objective, loss_components
@@ -213,7 +213,9 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     if saved and not {'epochs','updates'}.intersection(configuration or {}):
         total_updates = saved['effective_updates']
     norm = Normalization(saved['normalization'] if saved else training.manifest['normalization'])
-    model = LiquidTCN(ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))).to(device)
+    model = build_model(ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))).to(device)
+    training.check_model(model.config)
+    validation.check_model(model.config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
     # LambdaLR expects a multiplier of the optimizer's base pretrain_lr.
     # At the phase boundary switch to physics_lr, then apply the chosen decay.

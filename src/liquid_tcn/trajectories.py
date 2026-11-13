@@ -1,10 +1,11 @@
 """Chronological prepared-data access, with no overlapping-window weighting."""
 from pathlib import Path
 import os
+import time
 import numpy as np
 import torch
 from .dataset import WindowDataset
-from .model import LiquidTCN, ModelConfig
+from .model import build_model, ModelConfig
 from .normalization import Normalization
 from .checkpoint import load_checkpoint
 from .ported.storage import atomic_json
@@ -103,24 +104,34 @@ def event_signals(rows):
 
 
 @torch.no_grad()
-def cache_predictions(data, checkpoint, destination, device='cpu', block_rows=2048, cancelled=lambda:False):
+def cache_predictions(data, checkpoint, destination, device='cpu', block_rows=2048, cancelled=lambda:False, inference_mode='full'):
     """Atomic per-series caches; each endpoint is predicted only once per cache.
 
     Chunk inference overlaps only the RF-1 *inputs*. Its contextual outputs are
     disjoint. No training-window index is expanded or duplicated here.
     """
+    if inference_mode not in ('full','streaming'):raise ValueError('Unknown inference mode')
+    started=time.perf_counter()
     destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
     reader=Trajectories(data,block_rows=block_rows)
     saved=load_checkpoint(checkpoint)
-    model=LiquidTCN(ModelConfig(**saved['model_config'])).to(device).eval()
+    model=build_model(ModelConfig(**saved['model_config'])).to(device).eval()
     model.load_state_dict(saved['model'])
+    reader.dataset.check_model(model.config)
     norm=Normalization(saved['normalization']);rf=model.config.receptive_field
+    generated_series=0
     for series in reader.series:
         path=destination/f"series-{series['id']:06d}.npy"
         if path.exists():
             continue
+        generated_series+=1
         temp=path.with_suffix('.tmp.npy')
         out=np.lib.format.open_memmap(temp,mode='w+',dtype='float32',shape=(series['rows'],5,3))
+        if inference_mode=='streaming':
+            _stream_series(reader,series,model,norm,out,device,block_rows,cancelled)
+            out.flush();del out
+            os.replace(temp,path)
+            continue
         out[:min(rf-1,series['rows'])]=np.nan
         properties=torch.tensor(series['properties'],device=device,dtype=torch.float32)[None]
         for pos in range(rf-1,series['rows'],block_rows):
@@ -139,6 +150,41 @@ def cache_predictions(data, checkpoint, destination, device='cpu', block_rows=20
             out[pos:end]=physical
         out.flush();del out
         os.replace(temp,path)
-    atomic_json(destination/'complete.json',dict(checkpoint=str(checkpoint),split='test',
-        weighting='unique chronological intervals',series=len(reader.series)))
+    if generated_series or not (destination/'complete.json').exists():
+        atomic_json(destination/'complete.json',dict(checkpoint=str(checkpoint),split='test',
+            weighting='unique chronological intervals',series=len(reader.series),inference_mode=inference_mode,
+            generated_series=generated_series,cache_pass_seconds=time.perf_counter()-started))
     return reader
+
+
+@torch.inference_mode()
+def _stream_series(reader,series,model,norm,out,device,block_rows,cancelled):
+    from .model import CachedInference
+    cache=CachedInference(model,norm,1)
+    properties=torch.tensor(series['properties'],device=device,dtype=next(model.parameters()).dtype)[None]
+    cache.set_properties(properties)
+    native=reader.native_dt(series)
+    stride=round(model.config.sample_seconds/native) if native else None
+    previous=None
+    for begin in range(0,series['rows'],block_rows):
+        if cancelled():raise InterruptedError('Streaming prediction interrupted')
+        end=min(series['rows'],begin+block_rows)
+        rows=reader.read(series,begin,end)
+        motion=torch.tensor(rows['motion'],device=device,dtype=properties.dtype)
+        result=motion.new_full((len(rows),5,3),float('nan'))
+        for i,row in enumerate(rows):
+            if i % 128==0 and cancelled():raise InterruptedError('Streaming prediction interrupted')
+            contiguous=(previous is not None and row['episode_id']==previous['episode_id']
+                        and stride is not None and int(row['tick'])-int(previous['tick'])==stride)
+            if not contiguous or not row['interval_valid'] or not row['state_valid']:
+                cache.reset()
+            if row['state_valid'] and np.isfinite(row['motion']).all():
+                value,_=cache.step(motion[i:i+1],return_all=True)
+                if row['history_valid']:result[i].copy_(value[0])
+            else:
+                cache.reset()
+            previous=row.copy()
+        physical=result.cpu().numpy()
+        if not np.isfinite(physical[rows['history_valid']]).all():
+            raise FloatingPointError('Nonfinite eligible streaming predictions')
+        out[begin:end]=physical

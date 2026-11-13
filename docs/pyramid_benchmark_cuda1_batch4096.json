@@ -1,0 +1,259 @@
+{
+  "device": "cuda:1",
+  "device_name": "NVIDIA GeForce RTX 4090",
+  "torch": "2.15.0+cu132",
+  "cuda_runtime": "13.2",
+  "python": "3.11.18",
+  "threads": 2,
+  "warmup": 5,
+  "iterations": 20,
+  "compiled": false,
+  "compilation_seconds": 0.0,
+  "scope": "Short synthetic network benchmark; no dataset, training run, or admission check.\n\nForward/backward includes gradient clearing and a scalar squared-output loss,\nnot PCGrad, physics, loading, optimizer, or checkpoint I/O. Forward-only uses\neval/inference_mode on a full normalized input window already on the device.\nCached inference measures one sample per environment, including normalization\nand validity checks, after filling all history buffers.\n",
+  "cpu_peak_memory": "unavailable",
+  "results": [
+    {
+      "architecture": "tcn",
+      "backend": "custom",
+      "parameters": 252943,
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": null,
+        "attention_dim": null,
+        "attention_heads": null,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "training": [],
+      "forward_only": [
+        {
+          "mean_ms": 53.84731664962601,
+          "median_ms": 53.83770799744525,
+          "p95_ms": 53.91424710105639,
+          "calls_per_second": 18.571027531544516,
+          "peak_allocated_bytes": 1355653120,
+          "peak_reserved_bytes": 3091202048,
+          "batch_size": 4096,
+          "input_samples": 289,
+          "predicted_endpoints": 41,
+          "windows_per_second": 76066.92876920634
+        }
+      ],
+      "inference": [
+        {
+          "mean_ms": 1.813939249404939,
+          "median_ms": 1.807773001928581,
+          "p95_ms": 1.8388341515674256,
+          "calls_per_second": 551.286378707583,
+          "peak_allocated_bytes": 352557568,
+          "peak_reserved_bytes": 606076928,
+          "environments": 4096,
+          "samples_per_second": 2258069.00718626
+        }
+      ]
+    },
+    {
+      "architecture": "tcn_pyramid_attention",
+      "backend": "custom",
+      "parameters": 270544,
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn_pyramid_attention",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_dim": 64,
+        "attention_heads": 4,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "training": [],
+      "forward_only": [
+        {
+          "mean_ms": 83.96140720033145,
+          "median_ms": 83.95273999849451,
+          "p95_ms": 84.04487125371816,
+          "calls_per_second": 11.910233919900909,
+          "peak_allocated_bytes": 6609880064,
+          "peak_reserved_bytes": 9883877376,
+          "batch_size": 4096,
+          "input_samples": 289,
+          "predicted_endpoints": 41,
+          "windows_per_second": 48784.31813591412
+        }
+      ],
+      "inference": [
+        {
+          "mean_ms": 2.4009211992961355,
+          "median_ms": 2.396309999312507,
+          "p95_ms": 2.434711552268709,
+          "calls_per_second": 416.5067975963411,
+          "peak_allocated_bytes": 1207353344,
+          "peak_reserved_bytes": 1392508928,
+          "environments": 4096,
+          "samples_per_second": 1706011.842954613
+        }
+      ]
+    },
+    {
+      "architecture": "tcn_pyramid_attention",
+      "backend": "sdpa",
+      "parameters": 270544,
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn_pyramid_attention",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_dim": 64,
+        "attention_heads": 4,
+        "attention_backend": "sdpa",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "training": [],
+      "forward_only": [
+        {
+          "mean_ms": 97.93919705080043,
+          "median_ms": 97.93980199901853,
+          "p95_ms": 98.04945819851127,
+          "calls_per_second": 10.21041656571175,
+          "peak_allocated_bytes": 5373871104,
+          "peak_reserved_bytes": 9883877376,
+          "batch_size": 4096,
+          "input_samples": 289,
+          "predicted_endpoints": 41,
+          "windows_per_second": 41821.86625315533
+        }
+      ],
+      "inference": [
+        {
+          "mean_ms": 2.8031922494847095,
+          "median_ms": 2.795656502712518,
+          "p95_ms": 2.832122804102255,
+          "calls_per_second": 356.736146150455,
+          "peak_allocated_bytes": 1176944640,
+          "peak_reserved_bytes": 1392508928,
+          "environments": 4096,
+          "samples_per_second": 1461191.2546322637
+        }
+      ]
+    }
+  ]
+}

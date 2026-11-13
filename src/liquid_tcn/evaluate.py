@@ -114,18 +114,20 @@ class Metrics:
 
 @torch.no_grad()
 def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
-             supervised='mse', huber_delta=1., lambda_short=0., lambda_long=0., physics_dtype='float64'):
+             supervised='mse', huber_delta=1., lambda_short=0., lambda_long=0., physics_dtype='float64', prediction_provider=None):
     model.eval()
     overall, ground_truth, groups = Metrics(), Metrics(), {}
     maneuvers = {}
     sums = np.zeros(5); mse_sums = np.zeros(5); counts = np.zeros(5, dtype=np.int64)
     dataset = loader.dataset
+    dataset.check_model(model.config)
     batches = loader if max_batches is None else islice(loader, max_batches)
     for batch in batches:
         cpu_batch = batch
         batch = to_device(batch, device)
-        prediction = model(normalization.normalize('motion', batch['motion']),
-                           normalization.normalize('properties', batch['properties']))
+        prediction = (prediction_provider(cpu_batch).to(device) if prediction_provider is not None
+                      else model(normalization.normalize('motion', batch['motion']),
+                                 normalization.normalize('properties', batch['properties'])))
         result = objective(prediction, batch, normalization, supervised=supervised,
                            huber_delta=huber_delta, physics_dtype=physics_dtype)
         sums += result['supervised_sums'].cpu().numpy()

@@ -23,6 +23,8 @@ def main():
     ev = sub.add_parser('evaluate'); ev.add_argument('--data', required=True); ev.add_argument('--checkpoint', required=True)
     ev.add_argument('--split', choices=('train','validation','test'), default='test'); ev.add_argument('--output', required=True)
     ev.add_argument('--device', default='cpu'); ev.add_argument('--batch-size', type=int, default=16)
+    ev.add_argument('--inference-mode', choices=('full','streaming','both'),
+                    help='Defaults to both for test, full otherwise; selection always uses full inference')
     ev.add_argument('--num-workers', type=int, default=0); ev.add_argument('--max-batches', type=int)
     ex = sub.add_parser('export'); ex.add_argument('--checkpoint', required=True); ex.add_argument('--output', required=True)
     args = p.parse_args()
@@ -53,12 +55,30 @@ def main():
         output = output.replace('{timestamp}', datetime.now(timezone.utc).strftime('%Y_%m_%d_%H_%M_%S_%fZ'))
         resume = args.resume or selected.get('resume')
         maximum = args.max_updates if args.max_updates is not None else selected.get('max_updates')
+        monitoring = selected.get('monitoring')
+        if monitoring is None and resume and (Path(output)/'monitoring.json').exists():
+            monitoring = json.loads((Path(output)/'monitoring.json').read_text())
         if args.dry_run:
             print(json.dumps(dict(data=data, output=output, training=dict(DEFAULTS, **configuration),
-                                  model=selected.get('model'), resume=resume, max_updates=maximum), indent=2))
+                                  model=selected.get('model'), resume=resume, max_updates=maximum, monitoring=monitoring), indent=2))
             return
+        policy = None
+        if monitoring is not None:
+            from .staged_validation import standalone_policy
+            from .train import resume_configuration
+            from .checkpoint import load_checkpoint
+            saved = load_checkpoint(resume) if resume else None
+            resolved = resume_configuration(saved, configuration)
+            if resolved['epochs'] is not None:
+                from .dataset import WindowDataset
+                import math
+                budget = resolved['epochs'] * math.ceil(len(WindowDataset(data))/resolved['batch_size'])
+            else:
+                budget = resolved['updates']
+            policy = standalone_policy(data, output, monitoring, budget)
         result = train(data, output, configuration, resume, maximum,
-                       selected.get('model'), selected, args.logging_mode, args.trial_id)
+                       selected.get('model'), dict(selected, data=data, output=output, monitoring=monitoring),
+                       args.logging_mode, args.trial_id, staged_policy=policy)
         if result.get('interrupted'):
             raise SystemExit(128 + (result.get('signal') or 15))
         return
@@ -66,29 +86,49 @@ def main():
     saved = load_checkpoint(args.checkpoint)
     if args.command == 'export':
         from .metadata import PROPERTY_FIELDS
+        from .model import ModelConfig
         artifact = dict(format_version=1, model=saved['model'], model_config=saved['model_config'],
             normalization=saved['normalization'], data_manifest_sha256=saved['data_manifest_sha256'],
             output_order=['force','moment','r_B','v_B'], output_units=['N','N m','m','m/s'],
             input_order=['g_B','u_O_B','omega_B','held_a_B','held_alpha_B'],
-            property_fields=PROPERTY_FIELDS, sample_seconds=.005,
+            property_fields=PROPERTY_FIELDS, sample_seconds=ModelConfig(**saved['model_config']).sample_seconds,
             interface='liquid_tcn.inference.load_export; CachedInference.step returns [B,12] and warmup validity',
             convention='completed 5 ms interval, endpoint base frame, moment about fixed endpoint base origin',
             data_provenance=saved['data_provenance'])
         atomic_save(args.output, artifact); print(args.output); return
-    from .model import LiquidTCN, ModelConfig
+    from .model import build_model, ModelConfig
     from .normalization import Normalization
     from .dataset import WindowDataset, make_loader
     from .evaluate import evaluate
     torch.set_num_threads(4)
     dataset = WindowDataset(args.data, args.split, verify=False)
     loader = make_loader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)
-    model = LiquidTCN(ModelConfig(**saved['model_config'])).to(args.device)
+    model = build_model(ModelConfig(**saved['model_config'])).to(args.device)
     model.load_state_dict(saved['model'])
     from .train import weights
     short, long = weights(saved['config'], max(0, saved['update'] - 1))
-    result = evaluate(model, loader, Normalization(saved['normalization']), args.device, args.max_batches,
-        supervised=saved['config']['supervised'], huber_delta=saved['config']['huber_delta'],
-        lambda_short=short, lambda_long=long, physics_dtype=saved['config']['physics_dtype'])
+    norm=Normalization(saved['normalization'])
+    mode=args.inference_mode or ('both' if args.split=='test' else 'full')
+    def evaluate_mode(selected_mode):
+        provider=None
+        if selected_mode=='streaming':
+            from .streaming_assessment import CachedWindowPredictions, window_streamer
+            if args.max_batches is not None or args.split!='test':
+                provider=window_streamer(model,norm,args.device)
+            else:
+                from .trajectories import cache_predictions
+                cache=Path(args.output).with_suffix('')/'streaming_predictions'
+                cache_predictions(args.data,args.checkpoint,cache,args.device,inference_mode='streaming')
+                provider=CachedWindowPredictions(cache,norm,model.config.long_intervals)
+        return evaluate(model,loader,norm,args.device,args.max_batches,
+            supervised=saved['config']['supervised'],huber_delta=saved['config']['huber_delta'],
+            lambda_short=short,lambda_long=long,physics_dtype=saved['config']['physics_dtype'],
+            prediction_provider=provider)
+    result=evaluate_mode('streaming' if mode=='streaming' else 'full')
+    result['inference_mode']=mode
+    if mode=='both':
+        result['streaming']=evaluate_mode('streaming')
+        result['streaming_mse_difference']=result['streaming']['selection_metric']-result['selection_metric']
     result.update(checkpoint_sha256=digest(args.checkpoint), data_manifest_sha256=saved['data_manifest_sha256'], split=args.split)
     atomic_json(args.output, result)
     print(json.dumps(dict(status=result['status'], selection_metric=result['selection_metric'], coverage=result['coverage']), indent=2))

@@ -3,7 +3,7 @@ import argparse
 import json
 import torch
 from liquid_tcn.dataset import WindowDataset, make_loader, to_device
-from liquid_tcn.model import LiquidTCN, ModelConfig
+from liquid_tcn.model import build_model, ModelConfig
 from liquid_tcn.normalization import Normalization
 from liquid_tcn.train import precision_check, DEFAULTS
 
@@ -13,7 +13,7 @@ def main():
     p.add_argument('--device',default='cpu');p.add_argument('--amp',action='store_true');args=p.parse_args()
     torch.set_num_threads(4);torch.manual_seed(1)
     ds=WindowDataset(args.data)
-    model=LiquidTCN(ModelConfig(**ds.manifest['model'])).to(args.device)
+    model=build_model(ModelConfig(**ds.manifest['model'])).to(args.device)
     batch=to_device(next(iter(make_loader(ds,batch_size=2,pin_memory=False))),args.device)
     config=dict(DEFAULTS,amp=args.amp)
     report=precision_check(model,batch,Normalization(ds.manifest['normalization']),config,

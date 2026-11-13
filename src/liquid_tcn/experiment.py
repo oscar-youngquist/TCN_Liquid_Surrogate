@@ -78,6 +78,8 @@ def inspect(root,trial,stage,manifest):
         return value
     value=read_json(root/'trials'/trial/'assessment/summary.json')
     if value['status']!='complete':raise ValueError('Assessment unfinished')
+    if not (root/'trials'/trial/'assessment/streaming_comparison.json').exists():
+        raise ValueError('Streaming assessment unfinished')
     return dict(status='complete',report=str(root/'trials'/trial/'assessment/summary.json'))
 
 
@@ -109,29 +111,9 @@ def run_worker(root,trial,stage,resume=False):
                 if time.monotonic()-heartbeat[0]>=60:
                     log.emit('assessment_heartbeat');heartbeat[0]=time.monotonic()
                 return stopped.is_set()
-            # Preserve existing window-weighted assessment separately.
-            if not (destination/'window_test.json').exists():
-                from .checkpoint import load_checkpoint
-                from .model import LiquidTCN,ModelConfig
-                from .normalization import Normalization
-                from .dataset import WindowDataset,make_loader,close_loader
-                from .evaluate import evaluate
-                from .benchmark import CancellableLoader
-                class Cancellation:
-                    def cancelled(self):return stopped.is_set()
-                saved=load_checkpoint(checkpoint)
-                model=LiquidTCN(ModelConfig(**saved['model_config'])).to(execution['device']);model.load_state_dict(saved['model'])
-                loader=make_loader(WindowDataset(cfg['data'],'test'),batch_size=1024,num_workers=0)
-                try:
-                    report=evaluate(model,CancellableLoader(loader,Cancellation()),Normalization(saved['normalization']),execution['device'],
-                        supervised='mse',lambda_short=cfg['training']['lambda_short'],lambda_long=cfg['training']['lambda_long'],physics_dtype=cfg['training']['physics_dtype'])
-                    if stopped.is_set():raise InterruptedError('Test assessment interrupted')
-                    report['weighting']='overlapping eligible windows'
-                    atomic_json(destination/'window_test.json',report)
-                finally:close_loader(loader)
-                del model
-            from .offline import assess
-            assess(cfg['data'],checkpoint,destination,root/'shared_assessment',execution['device'],manifest['assessment_block_rows'],cancelled)
+            from .assessment import assess_checkpoint
+            assess_checkpoint(cfg['data'],checkpoint,destination,root/'shared_assessment',cfg['training'],
+                execution['device'],manifest['assessment_block_rows'],cancelled,log)
             if stopped.is_set():raise InterruptedError('Assessment interrupted')
             log.emit('assessment_complete',selected_update=selected['selected_update'])
             return 0
@@ -182,10 +164,17 @@ def main(argv=None):
                 return stopped.is_set()
             shared_events(args.data,root/'shared_assessment',cancelled)
             event('assessment_reference_complete')
+            # Older runs retain their completed full-sequence reports. Only the
+            # newly requested streaming work is pending; no retraining/reselection.
+            for trial in ids:
+                stage=state['trials'][trial]['stages'].get('assess',{})
+                if stage.get('status')=='complete' and not (root/'trials'/trial/'assessment/streaming_comparison.json').exists():
+                    stage['status']='pending_streaming'
             current[0]=Coordinator(root,manifest,state,args.concurrency,command,inspect)
             if stopped.is_set() or not current[0].run('assess',ids):raise InterruptedError('Assessment incomplete; resume to continue')
             from .experiment_report import write_report
             write_report(root,manifest,state)
+            write_report(root,manifest,state,inference_mode='streaming')
             if stopped.is_set():raise InterruptedError('Experiment interrupted during reporting')
             state['status']='complete';return 0
         except BaseException as exc:

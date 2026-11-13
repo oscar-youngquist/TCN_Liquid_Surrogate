@@ -1,0 +1,370 @@
+{
+  "device": "cuda:1",
+  "device_name": "NVIDIA GeForce RTX 4090",
+  "torch": "2.15.0+cu132",
+  "cuda_runtime": "13.2",
+  "python": "3.11.18",
+  "threads": 2,
+  "warmup": 3,
+  "iterations": 10,
+  "compiled": false,
+  "compilation_seconds": 0.0,
+  "scope": "Short synthetic network benchmark; no dataset, training run, or admission check.\n\nForward/backward includes gradient clearing and a scalar squared-output loss,\nnot PCGrad, physics, loading, optimizer, or checkpoint I/O. Inference measures\none cached sample per environment, including normalization and validity checks.\n",
+  "cpu_peak_memory": "unavailable",
+  "results": [
+    {
+      "architecture": "tcn",
+      "backend": "custom",
+      "parameters": 252943,
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": null,
+        "attention_dim": null,
+        "attention_heads": null,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "training": [
+        {
+          "mean_ms": 2.3821946007956285,
+          "median_ms": 2.3741485019854736,
+          "p95_ms": 2.4433254002360627,
+          "calls_per_second": 419.7809866859787,
+          "peak_allocated_bytes": 40656384,
+          "peak_reserved_bytes": 50331648,
+          "batch_size": 16,
+          "windows_per_second": 6716.495786975659
+        },
+        {
+          "mean_ms": 4.150715299329022,
+          "median_ms": 4.682328999479068,
+          "p95_ms": 4.854795299252146,
+          "calls_per_second": 240.92232973956408,
+          "peak_allocated_bytes": 134750208,
+          "peak_reserved_bytes": 195035136,
+          "batch_size": 64,
+          "windows_per_second": 15419.029103332101
+        },
+        {
+          "mean_ms": 36.71621860121377,
+          "median_ms": 36.706533002870856,
+          "p95_ms": 36.81403690097795,
+          "calls_per_second": 27.23592020358387,
+          "peak_allocated_bytes": 2078312448,
+          "peak_reserved_bytes": 2598371328,
+          "batch_size": 1024,
+          "windows_per_second": 27889.582288469883
+        }
+      ],
+      "inference": [
+        {
+          "mean_ms": 0.6143349994090386,
+          "median_ms": 0.6095645003370009,
+          "p95_ms": 0.6402764010999817,
+          "calls_per_second": 1627.7763776472984,
+          "peak_allocated_bytes": 2146304,
+          "peak_reserved_bytes": 2598371328,
+          "environments": 1,
+          "samples_per_second": 1627.7763776472984
+        },
+        {
+          "mean_ms": 0.6974927993724123,
+          "median_ms": 0.6938534970686305,
+          "p95_ms": 0.7217997492261928,
+          "calls_per_second": 1433.706557113961,
+          "peak_allocated_bytes": 3155456,
+          "peak_reserved_bytes": 2598371328,
+          "environments": 16,
+          "samples_per_second": 22939.304913823376
+        },
+        {
+          "mean_ms": 0.7225496985483915,
+          "median_ms": 0.7238760008476675,
+          "p95_ms": 0.7305142462428194,
+          "calls_per_second": 1383.9878447240496,
+          "peak_allocated_bytes": 7564288,
+          "peak_reserved_bytes": 2598371328,
+          "environments": 64,
+          "samples_per_second": 88575.22206233918
+        }
+      ]
+    },
+    {
+      "architecture": "tcn_pyramid_attention",
+      "backend": "custom",
+      "parameters": 270544,
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn_pyramid_attention",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_dim": 64,
+        "attention_heads": 4,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "training": [
+        {
+          "mean_ms": 3.841765200922964,
+          "median_ms": 3.510941500280751,
+          "p95_ms": 5.249577898212008,
+          "calls_per_second": 260.29701132171095,
+          "peak_allocated_bytes": 70821888,
+          "peak_reserved_bytes": 96468992,
+          "batch_size": 16,
+          "windows_per_second": 4164.752181147375
+        },
+        {
+          "mean_ms": 4.424396499962313,
+          "median_ms": 4.373972002213122,
+          "p95_ms": 4.617687348218169,
+          "calls_per_second": 226.01952605480045,
+          "peak_allocated_bytes": 255943168,
+          "peak_reserved_bytes": 348127232,
+          "batch_size": 64,
+          "windows_per_second": 14465.249667507229
+        },
+        {
+          "mean_ms": 55.884146101016086,
+          "median_ms": 55.87723850112525,
+          "p95_ms": 55.98162545065861,
+          "calls_per_second": 17.89416265200513,
+          "peak_allocated_bytes": 3924491776,
+          "peak_reserved_bytes": 4993318912,
+          "batch_size": 1024,
+          "windows_per_second": 18323.62255565325
+        }
+      ],
+      "inference": [
+        {
+          "mean_ms": 1.1846560992125887,
+          "median_ms": 1.1402804993849713,
+          "p95_ms": 1.3160417976905592,
+          "calls_per_second": 844.1268319680918,
+          "peak_allocated_bytes": 9908736,
+          "peak_reserved_bytes": 4993318912,
+          "environments": 1,
+          "samples_per_second": 844.1268319680918
+        },
+        {
+          "mean_ms": 1.1755256018659566,
+          "median_ms": 1.1803779998444952,
+          "p95_ms": 1.1908504009625176,
+          "calls_per_second": 850.6833015058642,
+          "peak_allocated_bytes": 14254592,
+          "peak_reserved_bytes": 4993318912,
+          "environments": 16,
+          "samples_per_second": 13610.932824093827
+        },
+        {
+          "mean_ms": 1.1696973000653088,
+          "median_ms": 1.1684465025609825,
+          "p95_ms": 1.1845182001707144,
+          "calls_per_second": 854.9220383292037,
+          "peak_allocated_bytes": 28164608,
+          "peak_reserved_bytes": 4993318912,
+          "environments": 64,
+          "samples_per_second": 54715.01045306904
+        }
+      ]
+    },
+    {
+      "architecture": "tcn_pyramid_attention",
+      "backend": "sdpa",
+      "parameters": 270544,
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn_pyramid_attention",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_dim": 64,
+        "attention_heads": 4,
+        "attention_backend": "sdpa",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "training": [
+        {
+          "mean_ms": 3.283860998635646,
+          "median_ms": 3.2868109956325497,
+          "p95_ms": 3.326593503879849,
+          "calls_per_second": 304.51958850130154,
+          "peak_allocated_bytes": 102221312,
+          "peak_reserved_bytes": 119537664,
+          "batch_size": 16,
+          "windows_per_second": 4872.313416020825
+        },
+        {
+          "mean_ms": 4.992582199338358,
+          "median_ms": 4.994879000150831,
+          "p95_ms": 5.020455696649151,
+          "calls_per_second": 200.29715287061774,
+          "peak_allocated_bytes": 402439680,
+          "peak_reserved_bytes": 635437056,
+          "batch_size": 64,
+          "windows_per_second": 12819.017783719535
+        },
+        {
+          "mean_ms": 71.32640029813047,
+          "median_ms": 71.20856449546409,
+          "p95_ms": 71.93395474932913,
+          "calls_per_second": 14.020054227049098,
+          "peak_allocated_bytes": 6393574912,
+          "peak_reserved_bytes": 7088373760,
+          "batch_size": 1024,
+          "windows_per_second": 14356.535528498276
+        }
+      ],
+      "inference": [
+        {
+          "mean_ms": 1.006817300367402,
+          "median_ms": 1.0090239993587602,
+          "p95_ms": 1.0246231002383865,
+          "calls_per_second": 993.2288605242339,
+          "peak_allocated_bytes": 9908224,
+          "peak_reserved_bytes": 7088373760,
+          "environments": 1,
+          "samples_per_second": 993.2288605242339
+        },
+        {
+          "mean_ms": 1.0881675996643025,
+          "median_ms": 1.0861174996534828,
+          "p95_ms": 1.1048872514948016,
+          "calls_per_second": 918.9760844822966,
+          "peak_allocated_bytes": 14136832,
+          "peak_reserved_bytes": 7088373760,
+          "environments": 16,
+          "samples_per_second": 14703.617351716746
+        },
+        {
+          "mean_ms": 1.116768601059448,
+          "median_ms": 1.116018000175245,
+          "p95_ms": 1.1385843026801012,
+          "calls_per_second": 895.4406481802293,
+          "peak_allocated_bytes": 27693568,
+          "peak_reserved_bytes": 7088373760,
+          "environments": 64,
+          "samples_per_second": 57308.20148353468
+        }
+      ]
+    }
+  ]
+}

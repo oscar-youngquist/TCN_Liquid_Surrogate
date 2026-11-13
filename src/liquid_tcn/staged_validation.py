@@ -99,8 +99,9 @@ class StageValidation:
     First entry into stage 6 starts empty patience/shortlist state at the resumed
     update. Earlier-stage monitoring never counts toward final-stage patience.
     """
-    def __init__(self, stage, budget, subset_path, deadline=None):
+    def __init__(self, stage, budget, subset_path, deadline=None, selection_root=None):
         self.stage, self.budget = stage,budget
+        self.selection_root = Path(selection_root) if selection_root is not None else None
         self.subset_path = Path(subset_path)  # Legacy deadline argument is ignored.
         self.subset = json.loads(self.subset_path.read_text())
         self.subset_hash = digest(self.subset_path)
@@ -182,8 +183,8 @@ class StageValidation:
         reason = 'maximum_updates' if update==self.budget else 'patience' if self.patience_stop else None
         if reason is None:
             return
-        folder = self.output.parent/self.stage
-        folder.mkdir(exist_ok=True)
+        folder = self.selection_root if self.selection_root is not None else self.output.parent/self.stage
+        folder.mkdir(parents=True, exist_ok=True)
         latest = folder/'latest.pt'
         copy_atomic(self.output/'latest.pt',latest)
         choices = list(self.state['shortlist']) if self.stage=='6' else []
@@ -217,7 +218,8 @@ class StageValidation:
         selected = min(evaluated,key=lambda r:(r['score'],r['update']))
         copy_atomic(self.output/selected['file'],folder/'best.pt')
         copy_atomic(folder/'best.pt',self.output/'best.pt')
-        report_path = self.output.parent/f'{self.stage}_best_validation.json'
+        report_path = (folder/'best_validation.json' if self.selection_root is not None
+                       else self.output.parent/f'{self.stage}_best_validation.json')
         atomic_json(report_path,selected['report'])
         result = dict(update=update,stopping_reason=reason,selected_update=selected['update'],best_update=selected['update'],
             normalized_mse=selected['score'],selection_complete=True,scope='shortlist_full' if self.stage=='6' else 'stage_endpoint',
@@ -230,3 +232,22 @@ class StageValidation:
     def close(self):
         if self.loader is not None:
             close_loader(self.loader)
+
+
+def standalone_policy(data, output, settings, budget):
+    """Reuse the experiment's monitoring policy in a self-contained run folder.
+
+    A supplied subset is copied once. Otherwise the same seed and stratified
+    sampling algorithm as the experiment reproduce its subset on the same data.
+    Resume reads the persisted local indices, never resampling them.
+    """
+    output = Path(output)
+    if settings.get('policy') != 'shortlist':
+        raise ValueError('monitoring.policy must be shortlist')
+    subset = output/'monitor_subset.json'
+    output.mkdir(parents=True, exist_ok=True)
+    if not subset.exists() and settings.get('subset'):
+        atomic_json(subset, json.loads(Path(settings['subset']).read_text()))
+    monitoring_subset(data, subset, seed=settings.get('seed', 1729))
+    atomic_json(output/'monitoring.json', settings)
+    return StageValidation('6', budget, subset, selection_root=output/'selection')

@@ -1,0 +1,111 @@
+{
+  "data": "data/prepared",
+  "output": "runs/pyramid_attention/{timestamp}",
+  "resume": null,
+  "max_updates": null,
+  "model": {
+    "property_dim": 24,
+    "embedding_dim": 32,
+    "channels": 64,
+    "kernel_size": 5,
+    "dilations": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "long_intervals": 40,
+    "architecture": "tcn_pyramid_attention",
+    "sample_seconds": 0.005,
+    "attention_ages_ms": [
+      [
+        0,
+        100,
+        200,
+        300,
+        400,
+        500,
+        600,
+        800,
+        1000,
+        1200
+      ],
+      [
+        0,
+        100,
+        200,
+        300,
+        400,
+        600,
+        800,
+        1000
+      ],
+      [
+        0,
+        200,
+        400,
+        600,
+        800
+      ],
+      [
+        0,
+        200,
+        400,
+        600
+      ],
+      [
+        0
+      ]
+    ],
+    "attention_dim": 64,
+    "attention_heads": 4,
+    "attention_backend": "custom",
+    "attention_dropout": 0.0,
+    "attention_projection_bias": false,
+    "attention_alpha": 0.1
+  },
+  "training": {
+    "amp": false,
+    "amp_rtol": 0.05,
+    "batch_size": 1024,
+    "cache_size": 8,
+    "checkpoint_every": 200,
+    "device": "cuda:1",
+    "epochs": null,
+    "gradient_clip": 1.0,
+    "gradient_strategy": "pcgrad",
+    "huber_delta": 1.0,
+    "lambda_long": 1.0,
+    "lambda_short": 1.0,
+    "min_delta": 0.0,
+    "min_lr_ratio": 0.1,
+    "num_workers": 0,
+    "patience": 40001,
+    "pcgrad_eps": 1e-12,
+    "physics_dtype": "float64",
+    "physics_lr": 0.001,
+    "pin_memory": true,
+    "precision_rtol": 0.005,
+    "prefetch_factor": 2,
+    "pretrain_lr": 0.001,
+    "pretrain_updates": 500,
+    "progress": false,
+    "ramp_updates": 1500,
+    "scheduler": "cosine",
+    "seed": 1,
+    "supervised": "mse",
+    "threads": 2,
+    "updates": 40000,
+    "validation_batch_size": 1024,
+    "validation_batches": null,
+    "validation_every": 1000,
+    "validation_num_workers": 0,
+    "weight_decay": 0.0001
+  },
+  "monitoring": {
+    "policy": "shortlist",
+    "seed": 1729,
+    "subset": null
+  }
+}

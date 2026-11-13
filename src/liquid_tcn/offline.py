@@ -232,11 +232,11 @@ def analyze_events(reader, series, predictions, db, stats, ref, plot_path, cance
     return dict(events=counts,unavailable=dict(unavailable))
 
 
-def assess(data, checkpoint, output, shared, device='cpu', block_rows=2048, cancelled=lambda:False):
+def assess(data, checkpoint, output, shared, device='cpu', block_rows=2048, cancelled=lambda:False, inference_mode='full'):
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     if (output/'summary.json').exists():return json.loads((output/'summary.json').read_text())
     ref,event_path=shared_events(data,shared,cancelled)
-    reader=cache_predictions(data,checkpoint,output/'predictions',device,block_rows,cancelled)
+    reader=cache_predictions(data,checkpoint,output/'predictions',device,block_rows,cancelled,inference_mode)
     db=sqlite3.connect(event_path)
     global_stats=defaultdict(Stats);groups={};conditions=defaultdict(Stats);condition_groups=defaultdict(set);coverage=defaultdict(int);censored=defaultdict(int);exclusions=defaultdict(int)
     for series in reader.series:
@@ -315,7 +315,7 @@ def assess(data, checkpoint, output, shared, device='cpu', block_rows=2048, canc
     if not coverage['events']:unavailable.append('No events meet the frozen training thresholds')
     coverage['collection_groups']=len(groups)
     coverage['excluded_rows_or_segment_anchors']=coverage['rows']-coverage['intervals']
-    summary=dict(status='complete',weighting='unique chronological intervals; rolling horizons counted once per end timestamp',
+    summary=dict(status='complete',inference_mode=inference_mode,weighting='unique chronological intervals; rolling horizons counted once per end timestamp',
         checkpoint=str(checkpoint),coverage=dict(coverage),exclusions_nonexclusive=dict(exclusions),metrics=metrics,conditions={k:dict(v.result(),groups=len(condition_groups[k])) for k,v in conditions.items() if v.n},
         censored_events=dict(censored),
         groups=groups,unavailable=unavailable,

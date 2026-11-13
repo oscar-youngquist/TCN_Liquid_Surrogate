@@ -63,6 +63,45 @@ The dataset manifest supplies window counts, splits, properties and normalizatio
 No collection group is reassigned. Do not replace the dataset midway through an
 experiment if the goal is a matched scientific comparison.
 
+## Select and assess one local training run
+
+For a single full-model run trained with `StageValidation`, invoke:
+
+```bash
+bash scripts/evaluate_local_full.sh \
+  --run runs/full_local_40000/trials/full-s1/run \
+  --device cuda:1 --threads 2
+```
+
+The default run path is the one shown above. The dataset defaults to the saved
+`launch_config.json` path; use `--data /path/to/prepared` if it has moved.
+The monitoring subset is located automatically in the run's ancestor directories,
+or can be supplied with `--subset /path/to/monitor_subset.json`.
+
+This command uses the same full-validation shortlist policy as the experiment
+runner, including cached full-validation reports and earlier-update tie breaking.
+Completed selection is reused. If selection was interrupted, it is finished using
+the saved monitoring shortlist plus the stopping checkpoint. Training must have
+reached its configured maximum or patience stop; this command performs no optimizer
+updates and opens no training TensorBoard writer.
+
+After selection, the common experiment assessment helper evaluates the selected
+`6/best.pt` on the full test split with batch size 1024 and zero loader workers,
+then runs the chronological analyses. Use `--window-only` to request just the
+existing full test-window assessment. Both validation and test losses retain the
+existing physics calculations. Test metrics never affect checkpoint selection.
+
+Results default to the trial's `assessment/` directory: `window_test.json` contains
+the full window-weighted evaluation, `summary.json` contains chronological analyses,
+`selection.json` records the chosen update, and `report.md` links those outputs.
+This single-run entry point does not generate the twelve-model paired tables or
+comparison plots. `--output` can select a different assessment destination.
+
+Rerun the same command after interruption to reuse completed reports, prediction
+caches and per-series analysis results. The script shares the training lock, so it
+cannot evaluate and replace the selected checkpoint while a trainer is writing it.
+It accepts optional leading `--python /path/to/python` and preserves GPU visibility.
+
 ## Training and checkpoint selection
 
 All variants use MSE, physics-phase LR 0.001, 500 pretraining updates, a 1,500-update
@@ -207,3 +246,7 @@ event analysis, constant impulse/work and moment-reference calculations, report
 aggregation, paired group bootstrap, and resumed dispatch. CLI dry-run and Bash
 syntax checks passed. GPU execution and plot rendering were not exercised in the
 local environment; Matplotlib is installed by the package dependency update.
+
+## FiLM and streaming assessment
+
+See [FiLM conditioning and cached one-step assessment](film_streaming.md) for the optional property conditioning, cache lifecycle, measured batch-4096 inference costs, and repeated test assessments. Full-sequence and streaming results use the same validation-selected checkpoints and frozen event definitions. Resume reuses completed full-sequence results and computes missing streaming reports without retraining.

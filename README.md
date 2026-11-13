@@ -6,6 +6,10 @@ The [architecture guide](docs/architecture.md) defines the network, input channe
 
 The data and physics utilities originate from the HCR Genesis collection project; [source provenance and licensing](docs/provenance.md) identify the imported revision and local adaptations. [Validation results](docs/validation.md) record regression, equivalence, and smoke-test coverage. Recordings and trained weights are not bundled.
 
+An optional [sparse temporal-pyramid attention model](docs/pyramid_attention.md) adds 28 historical feature tokens while retaining the default 249-sample history. The original TCN remains the default, and legacy checkpoints remain loadable. See the guide for configuration, training/evaluation commands, and measured GPU overhead.
+
+Optional [FiLM property conditioning and optimized cached inference](docs/film_streaming.md) work with both architectures. Selected-checkpoint test assessments repeat the window metrics and offline analyses in cached streaming mode, with separate reports and direct comparisons.
+
 See the **[field-by-field configuration reference](docs/configuration.md)** for every JSON value, its default, units, scheduling semantics, and resume behavior.
 
 ## Codebase layout
@@ -15,7 +19,7 @@ See the **[field-by-field configuration reference](docs/configuration.md)** for 
 | `src/liquid_tcn/ported/` | Collection-format readers, discrete losses, storage/audit, transforms, and diagnostic helpers. |
 | `data.py`, `metadata.py`, `discovery.py`, `preprocess.py` | Causal input retention, recorded property/schema parsing, group splits, bounded preprocessing and provenance. |
 | `dataset.py`, `normalization.py` | Lazy mmap windows, seeded resumable sampling, worker-local caches, training-only statistics. |
-| `model.py`, `objectives.py` | Causal residual TCN, streaming caches, five-head supervision and discrete physics objectives. |
+| `model.py`, `pyramid.py`, `objectives.py` | Causal residual TCN, streaming caches, five-head supervision and discrete physics objectives. |
 | `train.py`, `checkpoint.py`, `evaluate.py` | Optimizer phases, progress/TensorBoard, atomic resume, fixed validation and physical metrics. |
 | `cli.py`, `inference.py`, `launch_train.sh` | Commands, frozen export loading, and GPU/config selection. |
 | `configs/` | Complete ablation training JSONs and a source-preparation example. |
@@ -284,3 +288,13 @@ reported separately from window-weighted metrics.
 
 See [experiment commands and metric definitions](docs/experiments.md) for start,
 resume and assessment-only commands, execution settings, caches and limitations.
+
+To select and assess a single completed local full-model run using the same policy:
+
+```bash
+bash scripts/evaluate_local_full.sh --device cuda:1 --threads 2
+```
+
+It defaults to `runs/full_local_40000/trials/full-s1/run`, reuses completed
+full-validation selection, and writes test results under the trial's `assessment/`
+directory. See [single-run assessment options](docs/experiments.md#select-and-assess-one-local-training-run).

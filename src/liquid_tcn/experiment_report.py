@@ -73,7 +73,9 @@ def summarize(reports):
     return dict(seed_statistics=means,paired_full_minus_ablation=paired,bootstrap=bootstrap)
 
 
-def plots(root,reports,summary):
+def plots(root,reports,summary,source_root=None,inference_mode='full'):
+    source_root=Path(source_root or root)
+    assessment='assessment/streaming' if inference_mode=='streaming' else 'assessment'
     # Plotting is an installation dependency, imported only by the final report.
     import matplotlib
     matplotlib.use('Agg')
@@ -117,11 +119,11 @@ def plots(root,reports,summary):
         ax.set(xticks=x,xticklabels=['Median','95th','99th','Worst 1% mean'],ylabel=f'Vector error ({unit(name)})',title=f'{name}: reservoir tail estimates')
         ax.legend();fig.tight_layout();fig.savefig(destination/f'tails-{name}.png',dpi=160);plt.close(fig)
     # Earliest detected event in the lowest series ID, seed 1, for every variant.
-    paths=sorted((root/'trials/full-s1/assessment').glob('transient-*.json'))
+    paths=sorted((source_root/'trials/full-s1'/assessment).glob('transient-*.json'))
     if paths:
         filename=paths[0].name;fig,axes=plt.subplots(2,1,sharex=True)
         for variant in VARIANTS:
-            path=root/'trials'/f'{variant}-s1'/'assessment'/filename
+            path=source_root/'trials'/f'{variant}-s1'/assessment/filename
             if not path.exists():continue
             trace=np.asarray(read_json(path)['trace'])
             for h,ax in enumerate(axes):
@@ -131,18 +133,21 @@ def plots(root,reports,summary):
         axes[0].legend();fig.tight_layout();fig.savefig(destination/'transient-seed1.png',dpi=160);plt.close(fig)
 
 
-def write_report(root,manifest,state,make_plots=True):
-    root=Path(root)
-    reports={t:read_json(root/'trials'/t/'assessment/summary.json') for t in manifest['configs']}
+def write_report(root,manifest,state,make_plots=True,inference_mode='full'):
+    source_root=Path(root)
+    assessment='assessment/streaming' if inference_mode=='streaming' else 'assessment'
+    root=source_root/'streaming_report' if inference_mode=='streaming' else source_root
+    root.mkdir(parents=True,exist_ok=True)
+    reports={t:read_json(source_root/'trials'/t/assessment/'summary.json') for t in manifest['configs']}
     summary=summarize(reports)
-    summary.update(individual=reports,selection=read_json(root/'selected.json'),
-        window_weighted_reports={t:str(root/'trials'/t/'assessment/window_test.json') for t in reports})
+    summary.update(inference_mode=inference_mode,individual=reports,selection=read_json(source_root/'selected.json'),
+        window_weighted_reports={t:str(source_root/'trials'/t/assessment/'window_test.json') for t in reports})
     from .staged_sweep import summarize_seeds
     window_reports=[]
     for trial in reports:
         variant,seed=trial.rsplit('-s',1)
         window_reports.append(dict(selection=dict(label=variant+'_seed'+seed,seed=int(seed)),
-            report=read_json(root/'trials'/trial/'assessment/window_test.json')))
+            report=read_json(source_root/'trials'/trial/assessment/'window_test.json')))
     summary['window_weighted_seed_statistics']=summarize_seeds(window_reports)
     atomic_json(root/'report.json',summary)
     with open(root/'metrics.csv.tmp','w',newline='') as handle:
@@ -156,7 +161,7 @@ def write_report(root,manifest,state,make_plots=True):
         for trial,report in reports.items():
             for name,v in report['conditions'].items():writer.writerow([trial,name,v['count'],v.get('groups'),*[v[k] for k in ('median','p95','p99','worst_1pct_mean')]])
     (root/'conditions.csv.tmp').replace(root/'conditions.csv')
-    if make_plots:plots(root,reports,summary)
+    if make_plots:plots(root,reports,summary,source_root,inference_mode)
     lines=['# Full model and matched-seed ablations','',
         'Checkpoints were selected on full validation from the monitoring shortlist. Test results do not affect selection.',
         '', '| Run | Stopping update | Selected update | Intervals | Events |','|---|---:|---:|---:|---:|']

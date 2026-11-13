@@ -104,9 +104,14 @@ def test_chronological_experiment_smoke(tmp_path,monkeypatch):
         folder=root/'trials'/trial/'assessment';folder.mkdir(parents=True,exist_ok=True)
         atomic_json(folder/'summary.json',report)
         atomic_json(folder/'window_test.json',{'selection_metric':1.})
+        (folder/'streaming').mkdir(exist_ok=True)
+        atomic_json(folder/'streaming/summary.json',report)
+        atomic_json(folder/'streaming/window_test.json',{'selection_metric':1.})
     atomic_json(root/'selected.json',{t:selection for t in manifest['configs']})
     write_report(root,manifest,state,make_plots=False)
     assert (root/'metrics.csv').exists() and (root/'report.md').exists()
+    write_report(root,manifest,state,make_plots=False,inference_mode='streaming')
+    assert (root/'streaming_report/report.json').exists() and (root/'streaming_report/metrics.csv').exists()
     summary=json.loads((root/'report.json').read_text())
     key='endpoint/force/norm'
     assert summary['paired_full_minus_ablation'][key+'/rms']['short']['mean']==0.

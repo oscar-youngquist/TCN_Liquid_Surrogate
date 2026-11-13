@@ -402,6 +402,8 @@ def prepare(config, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     model = ModelConfig(**config.get('model', {}))
+    if not np.isclose(model.sample_seconds, .005, rtol=0, atol=1e-12):
+        raise ValueError('Prepared interval data uses a 0.005 second sampling period')
     if model.property_dim != len(PROPERTY_FIELDS):
         raise ValueError('property_dim must match the 24 recorded property fields')
     shard_rows = int(config.get('shard_rows', 8192))

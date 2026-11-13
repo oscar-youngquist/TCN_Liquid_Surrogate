@@ -1,0 +1,397 @@
+{
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "device": "cuda:1",
+  "dtype": "float32",
+  "batch_size": 4096,
+  "torch": "2.15.0+cu132",
+  "cuda": "13.2",
+  "python": "3.11.18",
+  "threads": 2,
+  "warmup": 8,
+  "repeats": 5,
+  "steps_per_repeat": 20,
+  "compiled": false,
+  "compilation_seconds": 0.0,
+  "outputs": "12 physical-unit values per environment per step",
+  "scope": "Equivalent one-endpoint full-history / reference-cache / ring-cache benchmark.\n\nFP32, no compilation, no training. GPU inputs and CUDA events are preallocated.\nThe full-history path consumes RF real samples and emits ONE endpoint, not the\n41 endpoints of a training window. All paths return the same 12 physical values.\n",
+  "results": [
+    {
+      "architecture": "tcn",
+      "conditioning": "existing",
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn",
+        "property_conditioning": "existing",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": null,
+        "attention_dim": null,
+        "attention_heads": null,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "paths": {
+        "full_history": {
+          "mean_ms": 43.470080070495605,
+          "median_ms": 43.45088005065918,
+          "p95_ms": 43.55942249298096,
+          "environment_predictions_per_second": 94225.72936045896,
+          "peak_allocated_bytes": 1203986944,
+          "persistent_cache_bytes": 0,
+          "initialization_seconds": 7.398004527203739e-06,
+          "prefill_seconds": 3.825996827799827e-06,
+          "prefill_samples": 0,
+          "speedup_vs_full": 1.0,
+          "speedup_vs_prior": 0.041105738913893033
+        },
+        "reference_cached": {
+          "mean_ms": 1.7868697619438172,
+          "median_ms": 1.7848320007324219,
+          "p95_ms": 1.8125823736190796,
+          "environment_predictions_per_second": 2292276.7440779977,
+          "peak_allocated_bytes": 440050176,
+          "persistent_cache_bytes": 270565376,
+          "initialization_seconds": 0.008550454003852792,
+          "prefill_seconds": 0.5279116489982698,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.33935022354126e-05,
+          "rms_difference_vs_full": 5.047221293352777e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 24.327503322462285,
+          "speedup_vs_prior": 1.0
+        },
+        "optimized_cached": {
+          "mean_ms": 1.2198809683322906,
+          "median_ms": 1.2124160528182983,
+          "p95_ms": 1.3056512475013733,
+          "environment_predictions_per_second": 3357704.6501509696,
+          "peak_allocated_bytes": 434576384,
+          "persistent_cache_bytes": 323774880,
+          "initialization_seconds": 0.024735965998843312,
+          "prefill_seconds": 0.3013095530041028,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.3192336559295654e-05,
+          "rms_difference_vs_full": 5.155858161742799e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 35.63468994021926,
+          "speedup_vs_prior": 1.4647902609601833
+        }
+      }
+    },
+    {
+      "architecture": "tcn",
+      "conditioning": "film",
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn",
+        "property_conditioning": "film",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": null,
+        "attention_dim": null,
+        "attention_heads": null,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "paths": {
+        "full_history": {
+          "mean_ms": 49.1998819732666,
+          "median_ms": 49.17913627624512,
+          "p95_ms": 49.28266162872315,
+          "environment_predictions_per_second": 83252.23223554916,
+          "peak_allocated_bytes": 1204270592,
+          "persistent_cache_bytes": 0,
+          "initialization_seconds": 3.035995177924633e-06,
+          "prefill_seconds": 2.095999661833048e-06,
+          "prefill_samples": 0,
+          "speedup_vs_full": 1.0,
+          "speedup_vs_prior": 0.037263699261258686
+        },
+        "reference_cached": {
+          "mean_ms": 1.8333696055412292,
+          "median_ms": 1.831936001777649,
+          "p95_ms": 1.8534400463104248,
+          "environment_predictions_per_second": 2234137.616125047,
+          "peak_allocated_bytes": 440333824,
+          "persistent_cache_bytes": 270565376,
+          "initialization_seconds": 0.008551209000870585,
+          "prefill_seconds": 0.45941284299624385,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.147125244140625e-05,
+          "rms_difference_vs_full": 5.042095835960936e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 26.835768316745,
+          "speedup_vs_prior": 1.0
+        },
+        "optimized_cached": {
+          "mean_ms": 1.2446310389041901,
+          "median_ms": 1.2390400171279907,
+          "p95_ms": 1.3137919902801514,
+          "environment_predictions_per_second": 3290935.122111561,
+          "peak_allocated_bytes": 434665984,
+          "persistent_cache_bytes": 323778720,
+          "initialization_seconds": 0.0016309080019709654,
+          "prefill_seconds": 0.30234685799950967,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.129243850708008e-05,
+          "rms_difference_vs_full": 5.166060873307288e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 39.52969228260901,
+          "speedup_vs_prior": 1.4730225651092406
+        }
+      }
+    },
+    {
+      "architecture": "tcn_pyramid_attention",
+      "conditioning": "existing",
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn_pyramid_attention",
+        "property_conditioning": "existing",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_dim": 64,
+        "attention_heads": 4,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "paths": {
+        "full_history": {
+          "mean_ms": 45.00859912872315,
+          "median_ms": 44.97971153259277,
+          "p95_ms": 45.134029388427734,
+          "environment_predictions_per_second": 91004.83194968081,
+          "peak_allocated_bytes": 1232571904,
+          "persistent_cache_bytes": 0,
+          "initialization_seconds": 3.074994310736656e-06,
+          "prefill_seconds": 2.4649998522363603e-06,
+          "prefill_samples": 0,
+          "speedup_vs_full": 1.0,
+          "speedup_vs_prior": 0.05316843570544335
+        },
+        "reference_cached": {
+          "mean_ms": 2.39303680896759,
+          "median_ms": 2.3925760984420776,
+          "p95_ms": 2.4248321056365967,
+          "environment_predictions_per_second": 1711632.677211976,
+          "peak_allocated_bytes": 1295042560,
+          "persistent_cache_bytes": 1030782976,
+          "initialization_seconds": 0.01602332300535636,
+          "prefill_seconds": 0.5973024319973774,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.353506326675415e-05,
+          "rms_difference_vs_full": 5.071234227216337e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 18.808151617250246,
+          "speedup_vs_prior": 1.0
+        },
+        "optimized_cached": {
+          "mean_ms": 1.727907840013504,
+          "median_ms": 1.7192959785461426,
+          "p95_ms": 1.8014719963073729,
+          "environment_predictions_per_second": 2370496.7968476773,
+          "peak_allocated_bytes": 1349889536,
+          "persistent_cache_bytes": 1113395072,
+          "initialization_seconds": 0.006212751999555621,
+          "prefill_seconds": 0.42523862099915277,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.328174352645874e-05,
+          "rms_difference_vs_full": 5.181216238270281e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 26.048032242490084,
+          "speedup_vs_prior": 1.3849331275381493
+        }
+      }
+    },
+    {
+      "architecture": "tcn_pyramid_attention",
+      "conditioning": "film",
+      "config": {
+        "property_dim": 24,
+        "embedding_dim": 32,
+        "channels": 64,
+        "kernel_size": 5,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "long_intervals": 40,
+        "architecture": "tcn_pyramid_attention",
+        "property_conditioning": "film",
+        "sample_seconds": 0.005,
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_dim": 64,
+        "attention_heads": 4,
+        "attention_backend": "custom",
+        "attention_dropout": 0.0,
+        "attention_projection_bias": false,
+        "attention_alpha": 0.1
+      },
+      "paths": {
+        "full_history": {
+          "mean_ms": 50.6984859085083,
+          "median_ms": 50.68134307861328,
+          "p95_ms": 50.81595020294189,
+          "environment_predictions_per_second": 80791.36736729652,
+          "peak_allocated_bytes": 1232658944,
+          "persistent_cache_bytes": 0,
+          "initialization_seconds": 2.9459988581947982e-06,
+          "prefill_seconds": 2.267006493639201e-06,
+          "prefill_samples": 0,
+          "speedup_vs_full": 1.0,
+          "speedup_vs_prior": 0.0480585425970271
+        },
+        "reference_cached": {
+          "mean_ms": 2.4364953446388244,
+          "median_ms": 2.4350719451904297,
+          "p95_ms": 2.4628223180770874,
+          "environment_predictions_per_second": 1681103.1504791048,
+          "peak_allocated_bytes": 1295129600,
+          "persistent_cache_bytes": 1030782976,
+          "initialization_seconds": 0.014947209005185869,
+          "prefill_seconds": 0.6136783869951614,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.187358379364014e-05,
+          "rms_difference_vs_full": 5.067104666522937e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 20.807955172195754,
+          "speedup_vs_prior": 1.0
+        },
+        "optimized_cached": {
+          "mean_ms": 1.753835518360138,
+          "median_ms": 1.7397760152816772,
+          "p95_ms": 1.8402815461158752,
+          "environment_predictions_per_second": 2335452.7588937306,
+          "peak_allocated_bytes": 1349979136,
+          "persistent_cache_bytes": 1113398912,
+          "initialization_seconds": 0.0050335380001342855,
+          "prefill_seconds": 0.43460827200033236,
+          "prefill_samples": 249,
+          "max_abs_difference_vs_full": 3.170967102050781e-05,
+          "rms_difference_vs_full": 5.189322564547183e-06,
+          "allclose_vs_full": false,
+          "speedup_vs_full": 28.907206735048984,
+          "speedup_vs_prior": 1.38923822623742
+        }
+      }
+    }
+  ]
+}
