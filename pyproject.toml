@@ -11,6 +11,7 @@ dependencies = ["numpy>=1.24", "torch>=2.2", "tensorboard>=2.12", "tqdm>=4.66", 
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+mamba = ["mamba-ssm>=2.2.6,<2.3", "einops>=0.8"]
 
 [project.scripts]
 liquid-tcn = "liquid_tcn.cli:main"

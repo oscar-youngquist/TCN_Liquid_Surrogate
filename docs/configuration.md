@@ -30,6 +30,10 @@ The same `model` object appears in the preparation configuration. The [architect
 | Key | Default | Meaning |
 |---|---:|---|
 | `architecture` | `"tcn"` | `"tcn"` or `"tcn_pyramid_attention"`. Missing fields in legacy checkpoints mean TCN. |
+| `temporal_memory` | `"none"` | `"mamba"` adds the official pre-normalized residual Mamba block to pyramid attention. Requires the optional CUDA dependency. Legacy checkpoints default to no memory. |
+| `mamba_d_state` | 16 | Positive SSM state dimension. Used only with Mamba. |
+| `mamba_d_conv` | 4 | Positive Mamba internal causal convolution width. |
+| `mamba_expand` | 2 | Positive Mamba inner-width expansion factor. |
 | `sample_seconds` | 0.005 | Sampling period for age-to-step conversion. Prepared recordings currently use 5 ms. |
 | `attention_ages_ms` | `null` | Per-block lists of nonnegative feature ages in milliseconds. Null resolves to the [28-token schedule](pyramid_attention.md#features-and-history) for five blocks. Supply explicit lists for other block counts. Empty block lists omit that block's memory tokens. |
 | `attention_dim` | `null` | Attention projection width; null resolves to `channels`. |
@@ -85,7 +89,9 @@ update without shortening the scheduler or triggering premature final selection.
 |---|---:|---|
 | `epochs` | `null` | Optional positive number of complete passes over training windows. If set, it takes precedence over `updates`: effective updates = `epochs * ceil(training_windows / batch_size)`. |
 | `updates` | 20000 | Optimizer-update budget when `epochs` is null. It also defines the fine-tuning scheduler horizon. |
-| `batch_size` | 16 | Number of contiguous windows per optimizer update; final batches may be smaller. |
+| `sequence_burn_in` | 200 | Mamba-only contextual recurrent steps before scoring. Nonnegative; burn-in retains gradients. |
+| `sequence_scored_intervals` | 400 | Mamba-only scored adjacent intervals; >=40. Produces this many + 1 scored endpoints. Long constraints remain exactly 40 intervals. |
+| `batch_size` | 16 | Number of independent clips for Mamba (example: 8), otherwise contiguous windows per optimizer update; final batches may be smaller. |
 | `pretrain_updates` | 5000 | Number of supervised updates before switching learning rates and starting the physics ramp. Counts updates even when epoch-based duration is used. |
 | `ramp_updates` | 5000 | Ramp duration in optimizer updates. For the zero-based update index `s`, ramp = `clip((s-pretrain_updates)/max(1,ramp_updates),0,1)`. |
 | `pretrain_lr` | 0.001 | AdamW learning rate during supervised pretraining. |
@@ -364,3 +370,5 @@ See [the staged schedule and resume rules](staged_sweeps.md#configuration-and-co
 Subset monitoring also computes and logs both physics objectives with per-channel
 losses and valid counts. These do not affect patience or checkpoint ranking. Full
 validation retains physics, wrench, lag and group diagnostics.
+
+For recurrent models, [sequence geometry and monitoring](mamba_memory.md) are separate from prepared-window geometry. Epochs count independently sampled eligible clips, not prepared 289-sample windows. The monitoring subset uses complete validation segments; checkpoint selection still uses the full validation split.

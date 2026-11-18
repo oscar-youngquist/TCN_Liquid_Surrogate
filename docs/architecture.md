@@ -132,3 +132,7 @@ this inference interface; controller integration and timing are application conc
 ## FiLM and streaming assessment
 
 See [FiLM conditioning and cached one-step assessment](film_streaming.md) for the optional property conditioning, cache lifecycle, measured batch-4096 inference costs, and repeated test assessments. Full-sequence and streaming results use the same validation-selected checkpoints and frozen event definitions. Resume reuses completed full-sequence results and computes missing streaming reports without retraining.
+
+## Optional temporal memory
+
+The [Mamba memory extension](mamba_memory.md) adds a pre-normalized recurrent residual after attention fusion and before the heads. Its independent clip training and persistent episode inference leave the finite TCN/attention receptive field and prepared-data contract unchanged. The recurrence itself retains history beyond that finite context.

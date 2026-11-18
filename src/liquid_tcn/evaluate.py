@@ -121,6 +121,12 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
     sums = np.zeros(5); mse_sums = np.zeros(5); counts = np.zeros(5, dtype=np.int64)
     dataset = loader.dataset
     dataset.check_model(model.config)
+    owned_provider = None
+    if prediction_provider is None and model.config.temporal_memory == 'mamba':
+        from .streaming_assessment import RecurrentPredictions
+        owned_provider = RecurrentPredictions(model,normalization,dataset,device,
+            cancelled=getattr(getattr(loader,'barrier',None),'cancelled',lambda:False))
+        prediction_provider = owned_provider
     batches = loader if max_batches is None else islice(loader, max_batches)
     for batch in batches:
         cpu_batch = batch
@@ -129,7 +135,8 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
                       else model(normalization.normalize('motion', batch['motion']),
                                  normalization.normalize('properties', batch['properties'])))
         result = objective(prediction, batch, normalization, supervised=supervised,
-                           huber_delta=huber_delta, physics_dtype=physics_dtype)
+                           huber_delta=huber_delta, physics_dtype=physics_dtype,
+                           long_intervals=model.config.long_intervals)
         sums += result['supervised_sums'].cpu().numpy()
         counts += result['supervised_counts'].cpu().numpy()
         if supervised == 'mse':
@@ -142,7 +149,8 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
             mse_sums += error.sum((0, 1, 3)).cpu().numpy()
         prepared = batch_metrics(result['physical'], cpu_batch, result)
         overall.add(result['physical'], batch, result, prepared=prepared)
-        truth = objective(normalization.normalize('targets', batch['targets']), batch, normalization)
+        truth = objective(normalization.normalize('targets', batch['targets']), batch, normalization,
+                          long_intervals=model.config.long_intervals)
         # Ground truth is used only for conservation floors, not zero-error
         # prediction metrics or target-versus-itself cross-correlations.
         ground_truth.add_conservation(numpy_physics(truth))
@@ -188,4 +196,5 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
                 supervised_counts=counts.tolist(),
                 physics_counts={h: a['count'] for h,a in overall.physics.items()})
     report['losses'] = losses
+    if owned_provider is not None:owned_provider.close()
     return report

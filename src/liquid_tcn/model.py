@@ -18,6 +18,10 @@ class ModelConfig:
     long_intervals: int = 40
     architecture: str = 'tcn'
     property_conditioning: str = 'existing'
+    temporal_memory: str = 'none'
+    mamba_d_state: int = 16
+    mamba_d_conv: int = 4
+    mamba_expand: int = 2
     sample_seconds: float = .005
     attention_ages_ms: tuple | None = None
     attention_dim: int | None = None
@@ -29,6 +33,17 @@ class ModelConfig:
 
     def __post_init__(self):
         self.dilations = tuple(self.dilations)
+        if self.temporal_memory not in ('none', 'mamba'):
+            raise ValueError('temporal_memory must be none or mamba')
+        if min(self.mamba_d_state, self.mamba_d_conv, self.mamba_expand) < 1:
+            raise ValueError('Mamba dimensions must be positive')
+        if self.temporal_memory == 'mamba':
+            if self.architecture != 'tcn_pyramid_attention':
+                raise ValueError('Mamba memory requires pyramid attention')
+            if self.long_intervals != 40 or self.sample_seconds != .005:
+                raise ValueError('Mamba sequence objectives require 40 intervals at 5 ms')
+            if self.attention_dropout != 0:
+                raise ValueError('Mamba sequence path requires deterministic attention (dropout=0)')
         if self.property_conditioning not in ('existing', 'film'):
             raise ValueError('property_conditioning must be existing or film')
         if self.architecture not in ('tcn', 'tcn_pyramid_attention'):

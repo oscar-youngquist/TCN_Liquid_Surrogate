@@ -72,10 +72,16 @@ def main():
             if resolved['epochs'] is not None:
                 from .dataset import WindowDataset
                 import math
-                budget = resolved['epochs'] * math.ceil(len(WindowDataset(data))/resolved['batch_size'])
+                from .model import ModelConfig
+                from .sequences import SequenceDataset
+                mc=ModelConfig(**(selected.get('model') or (saved['model_config'] if saved else WindowDataset(data).manifest['model'])))
+                ds=(SequenceDataset(data,mc,resolved['sequence_burn_in'],resolved['sequence_scored_intervals'])
+                    if mc.temporal_memory=='mamba' else WindowDataset(data))
+                budget = resolved['epochs'] * math.ceil(len(ds)/resolved['batch_size'])
             else:
                 budget = resolved['updates']
-            policy = standalone_policy(data, output, monitoring, budget)
+            policy = standalone_policy(data, output, monitoring, budget,
+                model=selected.get('model') or (saved['model_config'] if saved else None))
         result = train(data, output, configuration, resume, maximum,
                        selected.get('model'), dict(selected, data=data, output=output, monitoring=monitoring),
                        args.logging_mode, args.trial_id, staged_policy=policy)
@@ -113,7 +119,10 @@ def main():
         provider=None
         if selected_mode=='streaming':
             from .streaming_assessment import CachedWindowPredictions, window_streamer
-            if args.max_batches is not None or args.split!='test':
+            if model.config.temporal_memory == 'mamba':
+                from .streaming_assessment import RecurrentPredictions
+                provider=RecurrentPredictions(model,norm,dataset,args.device,streaming=True)
+            elif args.max_batches is not None or args.split!='test':
                 provider=window_streamer(model,norm,args.device)
             else:
                 from .trajectories import cache_predictions

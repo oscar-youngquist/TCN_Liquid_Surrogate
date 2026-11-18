@@ -72,10 +72,10 @@ def assess_checkpoint(data, checkpoint, destination, shared, config, device,
             def cancelled(self):return cancelled()
         norm=Normalization(saved['normalization'])
         provider=None
-        if inference_mode=='streaming':
+        if inference_mode=='streaming' or model.config.temporal_memory == 'mamba':
             from .trajectories import cache_predictions
             from .streaming_assessment import CachedWindowPredictions
-            cache_predictions(data,checkpoint,destination/'predictions',device,block_rows,cancelled,'streaming')
+            cache_predictions(data,checkpoint,destination/'predictions',device,block_rows,cancelled,inference_mode)
             provider=CachedWindowPredictions(destination/'predictions',norm,model.config.long_intervals)
         if str(device).startswith('cuda'):torch.cuda.synchronize(device)
         started=time.perf_counter()

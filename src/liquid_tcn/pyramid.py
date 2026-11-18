@@ -69,6 +69,10 @@ class PyramidAttentionTCN(LiquidTCN):
         self.attention = SparseCrossAttention(c.channels, c.attention_dim, c.attention_heads,
             c.attention_dropout, c.attention_projection_bias, c.attention_backend)
         self.alpha = nn.Parameter(torch.tensor(c.attention_alpha))
+        if c.temporal_memory == 'mamba':
+            from .temporal_memory import MambaMemory
+            self.temporal = MambaMemory(c)
+
 
     def fuse(self, query, memory, return_attention=False):
         # Tokens retain both scale identity and physical age. LayerNorm acts on
@@ -79,7 +83,10 @@ class PyramidAttentionTCN(LiquidTCN):
         fused = query + self.alpha * attended.squeeze(-2)
         return (fused, weights) if return_attention else fused
 
-    def forward(self, motion, properties, contextual_only=True, return_attention=False):
+    def forward(self, motion, properties, contextual_only=True, return_attention=False, memory_state=None):
+        if self.config.temporal_memory == 'mamba' and not contextual_only:
+            # Never feed padded/startup backbone features into recurrent state.
+            raise ValueError('Recurrent forward requires contextual_only=True')
         start = self.config.receptive_field - 1 if contextual_only else 0
         if motion.shape[1] <= start:
             raise ValueError('Incomplete causal history')
@@ -98,6 +105,8 @@ class PyramidAttentionTCN(LiquidTCN):
                 memories.append(x.transpose(1, 2)[:, positions.clamp_min(0)])
         result = self.fuse(x.transpose(1, 2)[:, start:], torch.cat(memories, dim=2), return_attention)
         features, weights = result if return_attention else (result, None)
+        if self.config.temporal_memory == 'mamba':
+            features = self.temporal(features, memory_state)
         out = torch.stack([head(features) for head in self.heads], -2)
         if not contextual_only:
             # Diagnostic full-length output explicitly marks startup as unusable.

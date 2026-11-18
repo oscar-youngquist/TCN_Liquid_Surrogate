@@ -331,7 +331,7 @@ def main(argv=None):
                     except BlockingIOError:
                         raise ValueError(f'Existing worker still owns {path}; wait for it to exit')
             from .staged_validation import monitoring_subset
-            monitoring_subset(args.data,root/'monitor_subset.json')
+            monitoring_subset(args.data,root/'monitor_subset.json',model=baseline['model'])
             slots = {d: args.concurrency // len(devices) + (i < args.concurrency % len(devices))
                      for i,d in enumerate(devices)}
             slots = {d:n for d,n in slots.items() if n}

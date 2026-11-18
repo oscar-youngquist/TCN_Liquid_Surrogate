@@ -102,3 +102,35 @@ def window_streamer(model, normalization, device):
             if i>=start:out[:,i-start].copy_(value)
         return out
     return predict
+
+
+class RecurrentPredictions(CachedWindowPredictions):
+    """Ephemeral, worker-local chronological cache for current validation weights.
+
+    Build only series actually requested by the fixed subset. Files and mappings
+    are bounded/lazy; state is retained across chunks, never reset per window.
+    """
+    def __init__(self, model, normalization, dataset, device, cancelled=lambda:False, streaming=False):
+        import tempfile
+        from .trajectories import Trajectories
+        self.temporary = tempfile.TemporaryDirectory(prefix='liquid-recurrent-')
+        super().__init__(self.temporary.name, normalization, model.config.long_intervals)
+        self.reader = Trajectories(dataset.path,dataset.split)
+        self.model, self.device = model,device
+        self.cancelled,self.streaming = cancelled,streaming
+
+    def __call__(self, batch):
+        from .sequences import recurrent_series
+        for sid in set(batch['series'].tolist()):
+            path = self.directory/f'series-{sid:06d}.npy'
+            if not path.exists():
+                series = self.reader.dataset.series[sid]
+                out = np.lib.format.open_memmap(path,mode='w+',dtype='float32',shape=(series['rows'],5,3))
+                recurrent_series(self.reader,series,self.model,self.norm,out,self.device,
+                                 cancelled=self.cancelled,streaming=self.streaming)
+                out.flush();del out
+        return super().__call__(batch)
+
+    def close(self):
+        self.cache.clear()
+        self.temporary.cleanup()

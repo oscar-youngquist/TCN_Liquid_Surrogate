@@ -1,0 +1,179 @@
+{
+  "batch_size": 4096,
+  "compilation": false,
+  "cuda": "12.8",
+  "device": "cuda:1",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "latency_ratio": 1.0341339678486896,
+  "mamba_ssm": "2.2.6.post3",
+  "precision": "FP32, TF32 disabled",
+  "repeats": 5,
+  "results": {
+    "mamba": {
+      "config": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "embedding_dim": 32,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "sample_seconds": 0.005,
+        "temporal_memory": "mamba"
+      },
+      "host_seconds": 2.6427124009933323,
+      "mean_ms": 26.415534172058106,
+      "median_ms": 25.795072555541992,
+      "p95_ms": 32.41400394439697,
+      "parameters": 324432,
+      "peak_allocated_bytes": 1748688384,
+      "peak_reserved_bytes": 1763704832,
+      "persistent_cache_bytes": 1108156032,
+      "predictions_per_second": 155060.27526532768,
+      "setup_and_prefill_seconds": 12.145543858991005,
+      "startup_peak_allocated_bytes": 1748438528
+    },
+    "none": {
+      "config": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "embedding_dim": 32,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "sample_seconds": 0.005,
+        "temporal_memory": "none"
+      },
+      "host_seconds": 2.556133508012863,
+      "mean_ms": 25.543628768920897,
+      "median_ms": 24.9169921875,
+      "p95_ms": 30.852300548553465,
+      "parameters": 291664,
+      "peak_allocated_bytes": 1706613760,
+      "peak_reserved_bytes": 1730150400,
+      "persistent_cache_bytes": 1066212992,
+      "predictions_per_second": 160353.09771584335,
+      "setup_and_prefill_seconds": 11.986860056000296,
+      "startup_peak_allocated_bytes": 1706363904
+    }
+  },
+  "scope": "CUDA event latency of cached 12-output step; shared payload; no data loading/training",
+  "steps": 20,
+  "threads": 2,
+  "torch": "2.7.0+cu128",
+  "measurement_conditions": "Background process PID 13072 used about 17 GiB on CUDA:1 during this session. Contended timing, not isolated throughput; no background workloads were interrupted.",
+  "validation_environment": "Existing lr_lab interpreter with isolated /tmp/liquid-mamba-cu128 official dependency; production liquid-tcn environment unchanged."
+}

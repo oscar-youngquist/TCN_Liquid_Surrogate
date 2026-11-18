@@ -25,7 +25,7 @@ from .evaluate import evaluate
 from .checkpoint import atomic_save, load_checkpoint, rng_state, restore_rng
 from .ported.storage import atomic_json, digest
 
-DEFAULTS = dict(seed=1, batch_size=16, num_workers=0, prefetch_factor=2, pin_memory=True,
+DEFAULTS = dict(sequence_burn_in=200, sequence_scored_intervals=400, seed=1, batch_size=16, num_workers=0, prefetch_factor=2, pin_memory=True,
     cache_size=8, updates=20000, epochs=None, pretrain_updates=5000, ramp_updates=5000,
     pretrain_lr=1e-3, physics_lr=1e-4, weight_decay=1e-4, gradient_clip=1.,
     lambda_short=1., lambda_long=1., supervised='mse', huber_delta=1.,
@@ -202,6 +202,14 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         raise ValueError('Run exists; supply --resume or use a fresh output')
     training = WindowDataset(data, 'train', config['cache_size'], verify=False)
     validation = WindowDataset(data, 'validation', config['cache_size'])
+    model_config = ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))
+    if model_config.temporal_memory == 'mamba':
+        from .sequences import SequenceDataset
+        log.emit('sequence_index_start',data=str(data))
+        training = SequenceDataset(data, model_config, config['sequence_burn_in'],
+                                   config['sequence_scored_intervals'], config['cache_size'])
+        log.emit('sequence_index_complete',clips=len(training),segments=len(training.spans),
+                 burn_in=config['sequence_burn_in'],scored_intervals=config['sequence_scored_intervals'])
     if not len(training) or not len(validation):
         raise ValueError('Training and validation must both have eligible windows in separate collection groups')
     if config['epochs'] is not None and (not isinstance(config['epochs'], int) or config['epochs'] < 1):
@@ -216,7 +224,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     model = build_model(ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))).to(device)
     training.check_model(model.config)
     validation.check_model(model.config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
+    from .temporal_memory import optimizer_parameters
+    optimizer = torch.optim.AdamW(optimizer_parameters(model, config['weight_decay']), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
     # LambdaLR expects a multiplier of the optimizer's base pretrain_lr.
     # At the phase boundary switch to physics_lr, then apply the chosen decay.
     # This LR schedule is independent of the gradual physics-weight ramp.
@@ -240,7 +249,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
             sampler.seed = config['seed']
         for group in optimizer.param_groups:
             if 'weight_decay' in (configuration or {}):
-                group['weight_decay'] = config['weight_decay']
+                group['weight_decay'] = (0. if all(getattr(p,'_no_weight_decay',False) for p in group['params'])
+                                         else config['weight_decay'])
         if 'pretrain_lr' in (configuration or {}):
             scheduler.base_lrs = [config['pretrain_lr']] * len(optimizer.param_groups)
         update, best, stale = saved['update'], saved['best'], saved['stale']
@@ -342,7 +352,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     log.emit('phase', update=update, phase=phase)
                     previous_phase = phase
                 result = objective(pred.float(), batch, norm, short, long, config['supervised'],
-                                   config['huber_delta'], config['physics_dtype'])
+                                   config['huber_delta'], config['physics_dtype'],
+                                   long_intervals=model.config.long_intervals)
                 # Keep supervision primary; project the SUM of weighted physics
                 # gradients only on conflict. Clip the merged gradient before AdamW.
                 projection = backward_objectives(result['supervised'],

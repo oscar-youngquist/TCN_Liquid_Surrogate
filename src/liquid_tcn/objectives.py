@@ -5,7 +5,10 @@ from .ported.discrete.losses import discrete_constraints
 
 
 def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
-              supervised='mse', huber_delta=1., physics_dtype='float64'):
+              supervised='mse', huber_delta=1., physics_dtype='float64', long_intervals=None):
+    # A clip forward includes recurrent burn-in, but the dataset supplies only
+    # scored labels. Slicing keeps gradients through burn-in without scoring it.
+    prediction = prediction[:, -batch['targets'].shape[1]:]
     if not torch.isfinite(prediction).all():
         raise FloatingPointError('Nonfinite network predictions')
     # prediction/target shape: [batch, endpoints, five heads, xyz]. Head order
@@ -52,8 +55,30 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
             h=batch['h'][:, 1:].to(dtype), episode_id=batch['episode_id'],
             state_valid=batch['state_valid'], history_valid=batch['history_valid'],
             interval_valid=batch['interval_valid'][:, 1:],
-            window_intervals=prediction.shape[1]-1, window_seconds=.005*(prediction.shape[1]-1))
+            window_intervals=min(40, prediction.shape[1]-1) if long_intervals is None else long_intervals,
+            window_seconds=.005*(min(40, prediction.shape[1]-1) if long_intervals is None else long_intervals))
         physics = discrete_constraints(**args)
+        horizon = args['window_intervals']
+        if prediction.shape[1]-1 > horizon:
+            # Each rolling 41-state slice has its own fixed initial base origin.
+            # Only replace LONG: supervision and adjacent constraints above are
+            # counted once, not duplicated by the overlapping long slices.
+            count = prediction.shape[1]-horizon
+            sliced = {}
+            interval_keys = {'F_average_B','tau_average_O_B','h','interval_valid'}
+            for key, value in args.items():
+                if not isinstance(value, torch.Tensor):
+                    sliced[key] = value
+                elif key == 'interior_dimensions':
+                    sliced[key] = value[:,None].expand(-1,count,-1).reshape(-1,3)
+                else:
+                    width = horizon if key in interval_keys else horizon+1
+                    windows = value.unfold(1,width,1).movedim(-1,2)
+                    sliced[key] = windows.reshape(-1,width,*value.shape[2:])
+            long = discrete_constraints(**sliced)['long']
+            for key in ('residual','normalized','valid'):
+                long[key] = long[key].reshape(prediction.shape[0],count,*long[key].shape[1:])
+            physics['long'] = long
         # Even during supervised pretraining (zero physics weights), report and
         # validate constraint coverage; an empty masked zero is not a good fit.
         for horizon in ('short', 'long'):

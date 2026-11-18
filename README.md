@@ -10,6 +10,8 @@ An optional [sparse temporal-pyramid attention model](docs/pyramid_attention.md)
 
 Optional [FiLM property conditioning and optimized cached inference](docs/film_streaming.md) work with both architectures. Selected-checkpoint test assessments repeat the window metrics and offline analyses in cached streaming mode, with separate reports and direct comparisons.
 
+Optional [Mamba temporal memory](docs/mamba_memory.md) extends the FiLM pyramid with independent-clip sequence training and episode-persistent inference. It requires a separate optional CUDA dependency; existing architectures and checkpoints remain unchanged.
+
 See the **[field-by-field configuration reference](docs/configuration.md)** for every JSON value, its default, units, scheduling semantics, and resume behavior.
 
 ## Codebase layout
@@ -18,8 +20,8 @@ See the **[field-by-field configuration reference](docs/configuration.md)** for 
 |---|---|
 | `src/liquid_tcn/ported/` | Collection-format readers, discrete losses, storage/audit, transforms, and diagnostic helpers. |
 | `data.py`, `metadata.py`, `discovery.py`, `preprocess.py` | Causal input retention, recorded property/schema parsing, group splits, bounded preprocessing and provenance. |
-| `dataset.py`, `normalization.py` | Lazy mmap windows, seeded resumable sampling, worker-local caches, training-only statistics. |
-| `model.py`, `pyramid.py`, `objectives.py` | Causal residual TCN, streaming caches, five-head supervision and discrete physics objectives. |
+| `dataset.py`, `sequences.py`, `normalization.py` | Lazy mmap windows, seeded resumable sampling, worker-local caches, training-only statistics. |
+| `model.py`, `pyramid.py`, `temporal_memory.py`, `objectives.py` | Causal residual TCN, streaming caches, five-head supervision and discrete physics objectives. |
 | `train.py`, `checkpoint.py`, `evaluate.py` | Optimizer phases, progress/TensorBoard, atomic resume, fixed validation and physical metrics. |
 | `cli.py`, `inference.py`, `launch_train.sh` | Commands, frozen export loading, and GPU/config selection. |
 | `configs/` | Complete ablation training JSONs and a source-preparation example. |
@@ -58,6 +60,16 @@ In subsequent terminal sessions, activate it with:
 ```bash
 conda activate liquid-tcn
 ```
+
+### Optional Mamba environment
+
+The ordinary Conda/venv installation above supports the TCN and attention models.
+For `configs/pyramid_film_mamba.json`, follow the [Mamba installation instructions](docs/mamba_memory.md#installation),
+including the separate Conda or venv setup and matching PyTorch/CUDA toolkit.
+The tested stack is PyTorch **2.7.0+cu128**, CUDA toolkit **12.8**, and
+`mamba-ssm==2.2.6.post3`. Install Mamba with `--no-build-isolation` after installing
+PyTorch and its build prerequisites. Do not replace an active training environment
+just to add this optional model. On Unity, run CUDA import checks in a GPU allocation.
 
 ### Verify the installation
 

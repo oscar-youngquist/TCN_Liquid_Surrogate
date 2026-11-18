@@ -18,7 +18,12 @@ MONITOR_EVERY = 1000
 RECOVERY_EVERY = 200
 
 
-def monitoring_subset(data, path, seed=1729):
+def monitoring_subset(data, path, seed=1729, model=None):
+    if model is not None:
+        from .model import ModelConfig
+        model = ModelConfig(**model) if isinstance(model,dict) else model
+        if model.temporal_memory == 'mamba':
+            return segment_monitoring_subset(data,path,seed)
     path = Path(path)
     fingerprint = digest(Path(data)/'manifest.json')
     if path.exists():
@@ -55,15 +60,20 @@ def monitoring_mse(model, loader, normalization, device, cancelled=lambda:False,
                    lambda_short=0., lambda_long=0., physics_dtype='float64'):
     """Fixed MSE selection plus physics objectives; no lag or group diagnostics."""
     model.eval()
+    provider = None
+    if model.config.temporal_memory == 'mamba':
+        from .streaming_assessment import RecurrentPredictions
+        provider = RecurrentPredictions(model,normalization,loader.dataset,device,cancelled)
     sums = np.zeros(5); counts = np.zeros(5,dtype=np.int64); windows = 0
     physics = {h:dict(sums=np.zeros(3),count=0) for h in ('short','long')}
     for batch in loader:
         if cancelled():
             raise InterruptedError('Monitoring interrupted')
+        predicted = provider(batch).to(device) if provider is not None else None
         batch = to_device(batch,device)
-        p = model(normalization.normalize('motion',batch['motion']),normalization.normalize('properties',batch['properties']))
+        p = predicted if predicted is not None else model(normalization.normalize('motion',batch['motion']),normalization.normalize('properties',batch['properties']))
         result = objective(p,batch,normalization,lambda_short,lambda_long,
-                           supervised='mse',physics_dtype=physics_dtype)
+                           supervised='mse',physics_dtype=physics_dtype,long_intervals=model.config.long_intervals)
         sums += result['supervised_sums'].cpu().numpy()
         counts += result['supervised_counts'].cpu().numpy()
         for horizon in physics:
@@ -72,6 +82,7 @@ def monitoring_mse(model, loader, normalization, device, cancelled=lambda:False,
             physics[horizon]['sums'] += terms['loss_by_channel'].cpu().numpy()*count
             physics[horizon]['count'] += count
         windows += len(p)
+    if provider is not None:provider.close()
     if not (counts>0).all():
         raise ValueError('Empty monitoring supervision')
     losses = {}
@@ -111,6 +122,10 @@ class StageValidation:
     def attach(self, model, norm, dataset, full_loader, config, output, saved, update, save, stopped, log, writer):
         self.model,self.norm,self.dataset,self.full_loader = model,norm,dataset,full_loader
         self.config,self.output,self.save,self.stopped,self.log,self.writer = config,Path(output),save,stopped,log,writer
+        if model.config.temporal_memory == 'mamba':
+            self.subset = monitoring_subset(dataset.path,self.subset_path,
+                seed=self.subset.get('seed',1729),model=model.config)
+            self.subset_hash = digest(self.subset_path)
         prior = (saved or {}).get('stage_monitoring')
         self.state = copy.deepcopy(prior) if prior and prior['stage']==self.stage else dict(
             stage=self.stage,subset_sha256=self.subset_hash,entry_update=update,checks=[],shortlist=[],
@@ -234,7 +249,7 @@ class StageValidation:
             close_loader(self.loader)
 
 
-def standalone_policy(data, output, settings, budget):
+def standalone_policy(data, output, settings, budget, model=None):
     """Reuse the experiment's monitoring policy in a self-contained run folder.
 
     A supplied subset is copied once. Otherwise the same seed and stratified
@@ -248,6 +263,56 @@ def standalone_policy(data, output, settings, budget):
     output.mkdir(parents=True, exist_ok=True)
     if not subset.exists() and settings.get('subset'):
         atomic_json(subset, json.loads(Path(settings['subset']).read_text()))
-    monitoring_subset(data, subset, seed=settings.get('seed', 1729))
+    monitoring_subset(data, subset, seed=settings.get('seed', 1729), model=model)
     atomic_json(output/'monitoring.json', settings)
     return StageValidation('6', budget, subset, selection_root=output/'selection')
+
+
+def segment_monitoring_subset(data, path, seed=1729):
+    import fcntl
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path)+'.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        return _segment_monitoring_subset(data,path,seed)
+
+
+def _segment_monitoring_subset(data, path, seed=1729):
+    """Persist a stratified 5% sample of complete valid validation segments.
+
+    All prepared windows inside chosen segments contribute to the familiar
+    normalized supervised metric. State is inferred from each segment's start,
+    including history before any window. No test series enters this selection.
+    """
+    from .trajectories import Trajectories
+    from .sequences import contextual_segments
+    path = Path(path)
+    if path.exists():
+        prior = json.loads(path.read_text())
+        if prior.get('sampling_unit') == 'segment':return prior
+    reader = Trajectories(data,'validation')
+    ds = reader.dataset
+    groups = {}
+    for series in reader.series:
+        key = json.dumps([series.get(k) for k in ('group','robot','payload_id')])
+        for start,end in contextual_segments(reader,series):
+            if end-start >= 41:
+                groups.setdefault(key,[]).append((series['id'],start,end))
+    total = sum(map(len,groups.values()))
+    if not total:raise ValueError('No complete validation segments')
+    size = max(1,round(.05*total))
+    quotas = {k:int(size*len(v)/total) for k,v in groups.items()}
+    order = sorted(groups,key=lambda k:(-(size*len(groups[k])/total-quotas[k]),k))
+    for k in order[:size-sum(quotas.values())]:quotas[k]+=1
+    rng = np.random.default_rng(seed)
+    chosen=[]
+    for k in sorted(groups):
+        chosen.extend(groups[k][i] for i in rng.choice(len(groups[k]),quotas[k],replace=False))
+    indices=[]
+    for sid,start,end in chosen:
+        indices.extend(np.flatnonzero((ds.index['series']==sid)&(ds.index['end']>=start+40)&(ds.index['end']<end)).tolist())
+    value=dict(sampling_unit='segment',seed=seed,segments=[list(s) for s in sorted(chosen)],indices=sorted(indices),
+               selected_segments=len(chosen),total_segments=total,segment_fraction=len(chosen)/total,
+               windows=len(indices),total_windows=len(ds),fraction=len(indices)/len(ds))
+    atomic_json(path,value)
+    return value

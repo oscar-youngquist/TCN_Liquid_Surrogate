@@ -75,6 +75,8 @@ class CachedInference:
         self.memory = p.new_empty(n, count, c) if count else None
         self.motion_mean, self.motion_std = self.norm._params('motion', p)
         self.target_mean, self.target_std = self.norm._params('targets', p)
+        self.recurrent_states = (self.model.temporal.allocate(n)
+            if self.model.config.temporal_memory == 'mamba' else ())
         self.modulation = None
         self._film = None
         self._ready = False
@@ -145,14 +147,14 @@ class CachedInference:
     def reset(self, environments=None):
         if environments is None:
             self.age.zero_()
-            for cache in self.caches+self.histories:
+            for cache in self.caches+self.histories+list(self.recurrent_states):
                 if cache is not None:
                     cache.zero_()
             return
         mask = torch.zeros_like(self.age, dtype=torch.bool)
         mask[environments] = True
         self.age.masked_fill_(mask, 0)
-        for cache in self.caches+self.histories:
+        for cache in self.caches+self.histories+list(self.recurrent_states):
             if cache is not None:
                 cache.masked_fill_(mask[:, None, None], 0)
 
@@ -212,6 +214,9 @@ class CachedInference:
                                    out=self.memory[:, self.memory_slices[i]])
         if self.memory is not None:
             x = self.model.fuse(x[..., 0][:, None], self.memory[:, None]).transpose(1, 2)
+        if self.recurrent_states:
+            x = self.model.temporal.step(x[..., 0], self.recurrent_states,
+                self.age + 1 >= self.model.config.receptive_field)[..., None]
         out = torch.stack([head(x[..., 0]) for head in self.model.heads], -2)
         out.mul_(self.target_std).add_(self.target_mean)
         self.cursor += 1

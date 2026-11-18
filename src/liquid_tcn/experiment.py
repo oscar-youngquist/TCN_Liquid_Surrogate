@@ -61,7 +61,8 @@ def initialize(root, args, devices):
     manifest['assessment_block_rows']=args.block_rows
     manifest.setdefault('sessions',[]).append(dict(started=time.time(),devices=devices,threads=args.threads,concurrency=args.concurrency))
     atomic_json(manifest_path,manifest);atomic_json(root/'state.json',state)
-    monitoring_subset(args.data,root/'monitor_subset.json')
+    monitoring_subset(args.data,root/'monitor_subset.json',
+        model=read_json(root/'trials'/manifest['configs'][0]/'resolved.json')['model'])
     return manifest,state
 
 
