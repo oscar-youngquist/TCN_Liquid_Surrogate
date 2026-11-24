@@ -203,26 +203,35 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     training = WindowDataset(data, 'train', config['cache_size'], verify=False)
     validation = WindowDataset(data, 'validation', config['cache_size'])
     model_config = ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))
-    if model_config.temporal_memory == 'mamba':
+    stateful = model_config.temporal_memory == 'mamba_stateful'
+    if stateful:
+        from .episode_chunks import EpisodeChunks
+        log.emit('sequence_index_start', data=str(data))
+        training = EpisodeChunks(data, model_config, config['batch_size'], config['seed'])
+        log.emit('sequence_index_complete', episodes=len(training.episodes), batches=len(training))
+    elif model_config.temporal_memory != 'none':
         from .sequences import SequenceDataset
         log.emit('sequence_index_start',data=str(data))
         training = SequenceDataset(data, model_config, config['sequence_burn_in'],
                                    config['sequence_scored_intervals'], config['cache_size'])
         log.emit('sequence_index_complete',clips=len(training),segments=len(training.spans),
                  burn_in=config['sequence_burn_in'],scored_intervals=config['sequence_scored_intervals'])
-    if not len(training) or not len(validation):
+    if not len(training) or (not stateful and not len(validation)):
         raise ValueError('Training and validation must both have eligible windows in separate collection groups')
     if config['epochs'] is not None and (not isinstance(config['epochs'], int) or config['epochs'] < 1):
         raise ValueError('epochs must be null or a positive integer')
     # Epoch mode includes the last partial batch. Resolve it once so the
     # learning-rate schedule and checkpoints share the same update horizon.
-    total_updates = (config['epochs'] * math.ceil(len(training) / config['batch_size'])
-                     if config['epochs'] is not None else config['updates'])
+    total_updates = config['updates']
+    if config['epochs'] is not None:
+        total_updates = (training.updates_for_epochs(config['epochs']) if stateful else
+                         config['epochs'] * math.ceil(len(training) / config['batch_size']))
     if saved and not {'epochs','updates'}.intersection(configuration or {}):
         total_updates = saved['effective_updates']
     norm = Normalization(saved['normalization'] if saved else training.manifest['normalization'])
     model = build_model(ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))).to(device)
-    training.check_model(model.config)
+    if not stateful:
+        training.check_model(model.config)
     validation.check_model(model.config)
     from .temporal_memory import optimizer_parameters
     optimizer = torch.optim.AdamW(optimizer_parameters(model, config['weight_decay']), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
@@ -238,13 +247,15 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         decay = 1. if config['scheduler'] == 'constant' else config['min_lr_ratio'] + (1-config['min_lr_ratio'])*.5*(1+math.cos(math.pi*fraction))
         return config['physics_lr']/config['pretrain_lr'] * decay
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, learning_rate)
-    sampler = EpochSampler(len(training), config['seed'])
+    sampler = training if stateful else EpochSampler(len(training), config['seed'])
     provenance = digest(Path(data)/'manifest.json')
     update, best, stale = 0, float('inf'), 0
     if resume:
         saved = load_checkpoint(resume, device)
         model.load_state_dict(saved['model']); optimizer.load_state_dict(saved['optimizer'])
         scheduler.load_state_dict(saved['scheduler']); sampler.load_state_dict(saved['sampler'])
+        if stateful and config['seed'] != sampler.seed:
+            raise ValueError('Stateful resume requires the original episode shuffle seed')
         if 'seed' in (configuration or {}):
             sampler.seed = config['seed']
         for group in optimizer.param_groups:
@@ -263,7 +274,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
             scheduler._last_lr = rates
         restore_rng(saved['rng'], source_device=saved.get('execution_device',saved['config']['device']), destination_device=str(device))
     options = {k: config[k] for k in ('batch_size', 'num_workers', 'prefetch_factor', 'pin_memory', 'seed')}
-    loader = make_loader(training, sampler=sampler, **options)
+    loader = training if stateful else make_loader(training, sampler=sampler, **options)
     validation_options = dict(options)
     for key in ('batch_size', 'num_workers'):
         if config['validation_' + key] is not None:
@@ -331,7 +342,7 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         while update < stop and stale < config['patience'] and not stop_requested.is_set() and not (staged_policy is not None and staged_policy.patience_stop):
             if sampler.position == sampler.length:
                 sampler.next_epoch()
-            sampler.limit = (stop - update) * config['batch_size']
+            sampler.limit = stop - update if stateful else (stop - update) * config['batch_size']
             tick = time.perf_counter()
             for batch in loader:
                 timing['loader_seconds'] += time.perf_counter()-tick
@@ -345,7 +356,10 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 # Clear previous gradients; each backward here represents one batch update.
                 model.train(); optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=config['amp']):
-                    pred = model(norm.normalize('motion', batch['motion']), norm.normalize('properties', batch['properties']))
+                    if stateful:
+                        pred = training.predict(model, norm, batch)
+                    else:
+                        pred = model(norm.normalize('motion', batch['motion']), norm.normalize('properties', batch['properties']))
                 short, long = weights(config, update)
                 phase = 'supervised' if short == long == 0 else 'physics'
                 if phase != previous_phase:
@@ -370,6 +384,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 compute_seconds = time.perf_counter()-train_start
                 timing['training_seconds'] += compute_seconds
                 timing['samples'] += len(batch['motion']); timing['updates'] += 1
+                if stateful:
+                    timing['real_steps'] = timing.get('real_steps', 0) + int(batch['length'].sum())
                 logging_start = time.perf_counter()
                 scalars = torch.stack([result['loss'].detach().double(), result['supervised'].detach().double(),
                     result['physics']['short']['loss'].detach().double(), result['physics']['long']['loss'].detach().double(),

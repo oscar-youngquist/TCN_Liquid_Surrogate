@@ -199,3 +199,35 @@ estimate of intrinsic overhead. Existing jobs were left running. The
 [raw benchmark](mamba_memory_benchmark_cuda1.json) includes versions, initialization
 cost, peak reserved memory, and throughput. No full training campaign or full-data
 assessment was launched for this change.
+
+## Reset-conditioned stateful training
+
+Use `configs/pyramid_film_mamba_stateful.json` to train on ordered episode
+streams. Each full chunk contains 400 new samples. At a recorded reset the
+backbone gets 248 copies of the full recorded 15-channel motion input, including
+gravity orientation, velocities, and held accelerations. Mamba's convolution
+state starts at zero. A zero-initialized output projection in the learned
+initializer conditions the SSM state on normalized properties and reset motion.
+Mamba processes real samples from the reset onward. State and the last 40
+predictions are detached between chunks and serialized with the stream position.
+Physics windows use this history to score each valid interval or window at its
+ending sample.
+
+The stateful implementation uses PyTorch Mamba-1 equations with a differentiable
+scan. It runs in the standard environment without the optional Mamba package.
+It reads the existing prepared shards plus the lightweight reset records from
+the original collection paths referenced by the manifest. It builds the stream
+index on launch. Splits and train-only normalization come from the manifest.
+A missing or nonfinite input ends an episode's usable prefix.
+
+```bash
+python -u -m liquid_tcn train \
+  --config configs/pyramid_film_mamba_stateful.json \
+  --data data/prepared_mamba --device cuda:0 --logging-mode progress
+```
+
+For deployment, set payload properties and call
+`cache.initialize_reset(reset_motion, environments)` with the recorded reset
+inputs in the selected environment order. The next `cache.step(...)` predicts at the
+first real sample. Alternatively, pass `reset_motion=` and the selected
+`reset=` environments to the same step call.

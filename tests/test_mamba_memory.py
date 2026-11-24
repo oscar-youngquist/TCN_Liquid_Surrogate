@@ -1,4 +1,4 @@
-"""Official Mamba CUDA checks are optional; indexing/physics checks run on CPU."""
+"""Recurrent memory checks on CPU for minGRU and optional CUDA for Mamba."""
 from dataclasses import asdict
 import json
 import os
@@ -72,9 +72,11 @@ def official_cuda():
     return device
 
 
-def test_official_causality_cache_resets_and_physics_gradients(tmp_path):
-    device=official_cuda();torch.manual_seed(31)
-    model=build_model(config()).to(device).eval()
+@pytest.mark.parametrize('memory', ('mamba', 'mingru'))
+def test_causality_cache_resets_and_physics_gradients(tmp_path, memory):
+    device = official_cuda() if memory == 'mamba' else 'cpu'
+    torch.manual_seed(31)
+    model = build_model(config(memory)).to(device).eval()
     x=torch.randn(2,45,15,device=device);props=torch.randn(2,24,device=device)
     y=model(x,props)
     changed=x.clone();changed[:,25:]+=20
@@ -99,21 +101,23 @@ def test_official_causality_cache_resets_and_physics_gradients(tmp_path):
     cache.invalidate()
     assert all(not s.any() for s in cache.recurrent_states)
     path,manifest=prepared(tmp_path)
-    ds=SequenceDataset(path,config(),3,60)
+    ds=SequenceDataset(path,config(memory),3,60)
     batch=to_device(next(iter(make_loader(ds,batch_size=2))),device)
     norm=Normalization(manifest['normalization'])
     model.train()
     prediction=model(norm.normalize('motion',batch['motion']),norm.normalize('properties',batch['properties']))
     result=objective(prediction,batch,norm,1.,1.)
+    projection = (model.temporal.block.in_proj if memory == 'mamba' else model.temporal.projection).weight
     for horizon in ('short','long'):
-        g=torch.autograd.grad(result['physics'][horizon]['loss'],model.temporal.block.in_proj.weight,retain_graph=True)[0]
+        g=torch.autograd.grad(result['physics'][horizon]['loss'],projection,retain_graph=True)[0]
         assert torch.isfinite(g).all() and g.abs().sum()>0
     # The first burn-in input still participates in the differentiable scan.
     assert prediction.shape[1]==64
 
 
-def test_official_train_resume_and_chronological_evaluation(tmp_path,monkeypatch):
-    device=official_cuda()
+@pytest.mark.parametrize('memory', ('mamba', 'mingru'))
+def test_train_resume_and_chronological_evaluation(tmp_path, monkeypatch, memory):
+    device = official_cuda() if memory == 'mamba' else 'cpu'
     from liquid_tcn.train import train
     from liquid_tcn.checkpoint import load_checkpoint
     from liquid_tcn.staged_validation import standalone_policy
@@ -125,14 +129,14 @@ def test_official_train_resume_and_chronological_evaluation(tmp_path,monkeypatch
         sequence_burn_in=3,sequence_scored_intervals=60,device=device,progress=False,
         validation_every=1000,checkpoint_every=200,validation_batch_size=8,weight_decay=.001)
     p=standalone_policy(path,out,settings,2)
-    train(path,out,cfg,max_updates=1,expected_model=asdict(config()),staged_policy=p)
+    train(path,out,cfg,max_updates=1,expected_model=asdict(config(memory)),staged_policy=p)
     first=load_checkpoint(out/'latest.pt')
     assert first['update']==1
     p=standalone_policy(path,out,settings,2)
     train(path,out,cfg,resume=out/'latest.pt',staged_policy=p)
     saved=load_checkpoint(out/'latest.pt');assert saved['update']==2
     assert saved['sampler']['position']==first['sampler']['position']+2
-    assert [g['weight_decay'] for g in saved['optimizer']['param_groups']]==[.001,0.]
+    assert [g['weight_decay'] for g in saved['optimizer']['param_groups']]== ([.001, 0.] if memory == 'mamba' else [.001])
     assert json.loads((out/'monitor_subset.json').read_text())['sampling_unit']=='segment'
     assert (out/'selection/selection.json').exists()
     from liquid_tcn.assessment import assess_checkpoint

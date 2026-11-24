@@ -19,6 +19,9 @@ class ModelConfig:
     architecture: str = 'tcn'
     property_conditioning: str = 'existing'
     temporal_memory: str = 'none'
+    episode_training: bool = False
+    reset_backfill: str = 'recorded'
+    consistency_intervals: int = 40
     mamba_d_state: int = 16
     mamba_d_conv: int = 4
     mamba_expand: int = 2
@@ -33,20 +36,24 @@ class ModelConfig:
 
     def __post_init__(self):
         self.dilations = tuple(self.dilations)
-        if self.temporal_memory not in ('none', 'mamba'):
-            raise ValueError('temporal_memory must be none or mamba')
+        if self.reset_backfill not in ('recorded', 'stationary'):
+            raise ValueError('Unknown reset backfill')
+        if self.architecture == 'recurrent_only' and self.temporal_memory != 'mamba_stateful':
+            raise ValueError('Recurrent-only requires stateful Mamba')
+        if self.temporal_memory not in ('none', 'mamba', 'mingru', 'mamba_stateful'):
+            raise ValueError('temporal_memory must be none, mamba, mingru, or mamba_stateful')
         if min(self.mamba_d_state, self.mamba_d_conv, self.mamba_expand) < 1:
             raise ValueError('Mamba dimensions must be positive')
-        if self.temporal_memory == 'mamba':
-            if self.architecture != 'tcn_pyramid_attention':
-                raise ValueError('Mamba memory requires pyramid attention')
+        if self.temporal_memory != 'none':
+            if self.architecture not in ('tcn_pyramid_attention', 'recurrent_only'):
+                raise ValueError('Recurrent memory requires pyramid attention')
             if self.long_intervals != 40 or self.sample_seconds != .005:
-                raise ValueError('Mamba sequence objectives require 40 intervals at 5 ms')
+                raise ValueError('Recurrent sequence objectives require 40 intervals at 5 ms')
             if self.attention_dropout != 0:
-                raise ValueError('Mamba sequence path requires deterministic attention (dropout=0)')
+                raise ValueError('Recurrent sequence path requires deterministic attention (dropout=0)')
         if self.property_conditioning not in ('existing', 'film'):
             raise ValueError('property_conditioning must be existing or film')
-        if self.architecture not in ('tcn', 'tcn_pyramid_attention'):
+        if self.architecture not in ('tcn', 'tcn_pyramid_attention', 'recurrent_only'):
             raise ValueError('Unknown model architecture: ' + self.architecture)
         if not math.isfinite(self.sample_seconds) or self.sample_seconds <= 0:
             raise ValueError('sample_seconds must be finite and positive')
@@ -94,6 +101,8 @@ class ModelConfig:
 
     @property
     def receptive_field(self):
+        if self.architecture == 'recurrent_only':
+            return 1
         backbone = self.block_receptive_fields[-1]
         if self.architecture == 'tcn':
             return backbone
@@ -270,6 +279,9 @@ def build_model(config=None):
     names and parameter shapes; no state-dict migration or partial loading occurs.
     """
     config = ModelConfig(**config) if isinstance(config, dict) else (config or ModelConfig())
+    if config.architecture == 'recurrent_only':
+        from .recurrent import RecurrentOnly
+        return RecurrentOnly(config)
     if config.architecture == 'tcn_pyramid_attention':
         from .pyramid import PyramidAttentionTCN
         return PyramidAttentionTCN(config)

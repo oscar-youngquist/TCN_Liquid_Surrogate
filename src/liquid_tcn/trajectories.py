@@ -127,7 +127,7 @@ def cache_predictions(data, checkpoint, destination, device='cpu', block_rows=20
         generated_series+=1
         temp=path.with_suffix('.tmp.npy')
         out=np.lib.format.open_memmap(temp,mode='w+',dtype='float32',shape=(series['rows'],5,3))
-        if model.config.temporal_memory == 'mamba':
+        if model.config.temporal_memory != 'none':
             from .sequences import recurrent_series
             recurrent_series(reader,series,model,norm,out,device,block_rows,cancelled,
                              streaming=inference_mode=='streaming')

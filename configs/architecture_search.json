@@ -1,0 +1,43 @@
+{
+  "data": "data/prepared_mamba",
+  "output": "runs/focused_architecture_search",
+  "device": "cuda:0",
+  "threads": 2,
+  "micro_batch": 2,
+  "monitor_fraction": 0.2,
+  "monitor_seed": 1729,
+  "seed": 1,
+  "screening": 10000,
+  "maximum_reference_updates": 40000,
+  "monitor_every": 1000,
+  "checkpoint_every": 200,
+  "patience": 3,
+  "pretrain": 500,
+  "physics_ramp": 1500,
+  "recurrent_ramp": 1000,
+  "pilot_updates": 4,
+  "histories_seconds": [
+    0.2,
+    0.5,
+    1.24
+  ],
+  "learning_rates": [
+    0.0001,
+    0.0003
+  ],
+  "effective_batches": [
+    16,
+    32
+  ],
+  "final_seeds": [
+    1,
+    2,
+    3
+  ],
+  "search_kind": "focused_history_lr_batch_v1",
+  "concurrency": 1,
+  "log_every": 100,
+  "extra_physics": false,
+  "benchmark_environments": 4096,
+  "benchmark_steps": 20
+}

@@ -76,7 +76,7 @@ class CachedInference:
         self.motion_mean, self.motion_std = self.norm._params('motion', p)
         self.target_mean, self.target_std = self.norm._params('targets', p)
         self.recurrent_states = (self.model.temporal.allocate(n)
-            if self.model.config.temporal_memory == 'mamba' else ())
+            if self.model.config.temporal_memory != 'none' else ())
         self.modulation = None
         self._film = None
         self._ready = False
@@ -156,7 +156,47 @@ class CachedInference:
         self.age.masked_fill_(mask, 0)
         for cache in self.caches+self.histories+list(self.recurrent_states):
             if cache is not None:
-                cache.masked_fill_(mask[:, None, None], 0)
+                cache.masked_fill_(mask.reshape((-1,) + (1,) * (cache.ndim - 1)), 0)
+
+    @torch.inference_mode()
+    def initialize_reset(self, motion, environments=None):
+        """Prefill selected reset environments from their recorded 15-channel state.
+
+        Pass rows in the order of the selected environments. The next call to
+        step consumes the first real sample. Plain reset still clears caches.
+        """
+        if not (self.model.config.episode_training or self.model.config.temporal_memory == 'mamba_stateful'):
+            raise ValueError('Reset prefill requires mamba_stateful')
+        self._ensure_current()
+        if not self._ready:
+            raise ValueError('Set properties before initializing a reset')
+        indices = torch.arange(self.environments, device=self.age.device)
+        selected = indices if environments is None else indices[environments]
+        if motion.shape != (len(selected), 15) or not torch.isfinite(motion).all():
+            raise ValueError('Expected finite recorded reset motion [selected environments, 15]')
+        if not len(selected):
+            return
+        properties = self._properties.expand(self.environments, -1)[selected]
+        temporary = type(self)(self.model, self.norm, len(selected))
+        temporary.set_properties(properties)
+        history = self.model.config.receptive_field - 1
+        backfill = motion.clone()
+        if self.model.config.reset_backfill == "stationary":
+            backfill[:, 3:] = 0
+        for _ in range(history):
+            temporary._advance_backbone(backfill)
+            temporary.cursor += 1
+        for destinations, sources, dim in ((self.caches, temporary.caches, 2),
+                                           (self.histories, temporary.histories, 1)):
+            for destination, source in zip(destinations, sources):
+                if destination is not None:
+                    shift = (self.cursor - temporary.cursor) % destination.shape[dim]
+                    destination[selected] = torch.roll(source, shift, dims=dim)
+        initial = () if not self.recurrent_states else self.model.temporal.initial_state(self.norm.normalize('properties', properties),
+                                                    self.norm.normalize('motion', motion))
+        for state, value in zip(self.recurrent_states, initial):
+            state[selected] = value
+        self.age[selected] = history
 
     def _conv(self, x, conv, index):
         ring = self.caches[index]
@@ -167,32 +207,7 @@ class CachedInference:
         # represented by the indices, so the small convolution uses dilation=1.
         return F.conv1d(self.taps[index], conv.weight, conv.bias)
 
-    @torch.inference_mode()
-    def step(self, motion, properties=None, reset=None, return_all=False):
-        """Return physical [B,12] (or all five [B,5,3] heads) and validity.
-
-        Existing callers may pass properties each step. Reuse a versioned tensor
-        or call set_properties once and omit it to avoid value comparison/sync.
-        Property mutations in ordinary tensors are detected by their version;
-        inference tensors without versions require a value comparison.
-        """
-        self._ensure_current()
-        if properties is not None:
-            unchanged = (self._ready and self._source is not None and self._source() is properties
-                         and self._stamp is not None and self._stamp == version(properties))
-            if not unchanged:
-                self.set_properties(properties)
-        if not self._ready:
-            raise ValueError('Call set_properties or supply properties to step')
-        if reset is not None:
-            self.reset(reset)
-        if motion.shape != (self.environments, 15):
-            raise ValueError('Expected one motion sample per environment: [environments,15]')
-        finite = torch.isfinite(motion).all()
-        if motion.is_cuda:
-            torch._assert_async(finite, 'Nonfinite inference inputs')
-        elif not finite:
-            raise FloatingPointError('Nonfinite inference inputs')
+    def _advance_backbone(self, motion):
         torch.sub(motion, self.motion_mean, out=self.inputs[:, :15])
         self.inputs[:, :15].div_(self.motion_std)
         x = self.model.projection(self.inputs[..., None])
@@ -212,8 +227,41 @@ class CachedInference:
                 # must enter the projections anew at each query timestamp.
                 torch.index_select(ring, 1, self.memory_positions[i][pos],
                                    out=self.memory[:, self.memory_slices[i]])
+        if self.model.config.architecture == "recurrent_only":
+            x = self.model.condition_block(x, self.modulation, 0)
         if self.memory is not None:
             x = self.model.fuse(x[..., 0][:, None], self.memory[:, None]).transpose(1, 2)
+        return x
+
+    @torch.inference_mode()
+    def step(self, motion, properties=None, reset=None, return_all=False, reset_motion=None):
+        """Return physical [B,12] (or all five [B,5,3] heads) and validity.
+
+        Existing callers may pass properties each step. Reuse a versioned tensor
+        or call set_properties once and omit it to avoid value comparison/sync.
+        Property mutations in ordinary tensors are detected by their version;
+        inference tensors without versions require a value comparison.
+        """
+        self._ensure_current()
+        if properties is not None:
+            unchanged = (self._ready and self._source is not None and self._source() is properties
+                         and self._stamp is not None and self._stamp == version(properties))
+            if not unchanged:
+                self.set_properties(properties)
+        if not self._ready:
+            raise ValueError('Call set_properties or supply properties to step')
+        if reset_motion is not None:
+            self.initialize_reset(reset_motion, reset)
+        elif reset is not None:
+            self.reset(reset)
+        if motion.shape != (self.environments, 15):
+            raise ValueError('Expected one motion sample per environment: [environments,15]')
+        finite = torch.isfinite(motion).all()
+        if motion.is_cuda:
+            torch._assert_async(finite, 'Nonfinite inference inputs')
+        elif not finite:
+            raise FloatingPointError('Nonfinite inference inputs')
+        x = self._advance_backbone(motion)
         if self.recurrent_states:
             x = self.model.temporal.step(x[..., 0], self.recurrent_states,
                 self.age + 1 >= self.model.config.receptive_field)[..., None]

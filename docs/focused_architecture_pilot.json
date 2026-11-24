@@ -1,0 +1,799 @@
+{
+  "device": "NVIDIA GeForce RTX 5070 (12 GB)",
+  "measured_utc": "2026-11-20T21:36:52Z",
+  "settings": {
+    "benchmark_environments": 4096,
+    "benchmark_steps": 20,
+    "checkpoint_every": 200,
+    "concurrency": 1,
+    "data": "data/prepared_mamba",
+    "device": "cuda:0",
+    "effective_batches": [
+      16,
+      32
+    ],
+    "extra_physics": false,
+    "final_seeds": [
+      1,
+      2,
+      3
+    ],
+    "histories_seconds": [
+      0.2,
+      0.5,
+      1.24
+    ],
+    "learning_rates": [
+      0.0001,
+      0.0003
+    ],
+    "log_every": 100,
+    "maximum_reference_updates": 40000,
+    "micro_batch": 2,
+    "monitor_every": 1000,
+    "monitor_fraction": 0.2,
+    "monitor_seed": 1729,
+    "output": "runs/focused_architecture_search",
+    "patience": 3,
+    "physics_ramp": 1500,
+    "pilot_updates": 4,
+    "pretrain": 500,
+    "recurrent_ramp": 1000,
+    "screening": 10000,
+    "search_kind": "focused_history_lr_batch_v1",
+    "seed": 1,
+    "threads": 2
+  },
+  "pilot": {
+    "hybrid-0.2s": {
+      "actual_history_seconds": 0.2,
+      "attention_dim": 64,
+      "attention_heads": 4,
+      "attention_tokens": 5,
+      "block_count": 3,
+      "cached": {
+        "all_valid": true,
+        "environment_steps_per_second": 1770029.6340316767,
+        "environments": 4096,
+        "mean_seconds": 0.0023140855504607317,
+        "p95_seconds": 0.0025836166030785536,
+        "peak_gpu_bytes": 414909952,
+        "persistent_bytes": 163337512,
+        "reset_seconds": {
+          "full": 0.039274236012715846,
+          "partial": 0.01950298399606254
+        }
+      },
+      "comparison": "history-plus-capacity",
+      "dilations": [
+        1,
+        1,
+        3
+      ],
+      "family": "hybrid",
+      "feature_width": 64,
+      "model": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0.0,
+            160.0
+          ],
+          [
+            0.0,
+            120.0
+          ],
+          [
+            0.0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "consistency_intervals": 40,
+        "dilations": [
+          1,
+          1,
+          3
+        ],
+        "embedding_dim": 32,
+        "episode_training": true,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "reset_backfill": "recorded",
+        "sample_seconds": 0.005,
+        "temporal_memory": "mamba_stateful"
+      },
+      "parameters": 302096,
+      "per_layer_sampling_ages_ms": [
+        [
+          0.0,
+          160.0
+        ],
+        [
+          0.0,
+          120.0
+        ],
+        [
+          0.0
+        ]
+      ],
+      "receptive_field": 41,
+      "requested_history_seconds": 0.2,
+      "signature": "e0f746dfa8c63ba3",
+      "status": "measured",
+      "training": {
+        "optimizer_steps": 4,
+        "peak_gpu_bytes": 92099072,
+        "reference_per_second": 1.160354989016297,
+        "reference_updates": 3.8696875,
+        "scored_steps": 24766,
+        "seconds": 3.3349169319990324,
+        "updates": 4
+      }
+    },
+    "hybrid-0.5s": {
+      "actual_history_seconds": 0.52,
+      "attention_dim": 64,
+      "attention_heads": 4,
+      "attention_tokens": 11,
+      "block_count": 4,
+      "cached": {
+        "all_valid": true,
+        "environment_steps_per_second": 1375562.8441530776,
+        "environments": 4096,
+        "mean_seconds": 0.0029776901996228845,
+        "p95_seconds": 0.003253661754570203,
+        "peak_gpu_bytes": 971152896,
+        "persistent_bytes": 424442152,
+        "reset_seconds": {
+          "full": 0.15930331300478429,
+          "partial": 0.05362171700107865
+        }
+      },
+      "comparison": "history-plus-capacity",
+      "dilations": [
+        1,
+        2,
+        3,
+        7
+      ],
+      "family": "hybrid",
+      "feature_width": 64,
+      "model": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0.0,
+            120.0,
+            240.0,
+            360.0,
+            480.0
+          ],
+          [
+            0.0,
+            200.0,
+            400.0
+          ],
+          [
+            0.0,
+            280.0
+          ],
+          [
+            0.0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "consistency_intervals": 40,
+        "dilations": [
+          1,
+          2,
+          3,
+          7
+        ],
+        "embedding_dim": 32,
+        "episode_training": true,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "reset_backfill": "recorded",
+        "sample_seconds": 0.005,
+        "temporal_memory": "mamba_stateful"
+      },
+      "parameters": 347792,
+      "per_layer_sampling_ages_ms": [
+        [
+          0.0,
+          120.0,
+          240.0,
+          360.0,
+          480.0
+        ],
+        [
+          0.0,
+          200.0,
+          400.0
+        ],
+        [
+          0.0,
+          280.0
+        ],
+        [
+          0.0
+        ]
+      ],
+      "receptive_field": 105,
+      "requested_history_seconds": 0.5,
+      "signature": "c5b6ef4894f3f92d",
+      "status": "measured",
+      "training": {
+        "optimizer_steps": 4,
+        "peak_gpu_bytes": 100792832,
+        "reference_per_second": 1.1547509738377526,
+        "reference_updates": 3.8696875,
+        "scored_steps": 24766,
+        "seconds": 3.3511013090028428,
+        "updates": 4
+      }
+    },
+    "hybrid-1.24s": {
+      "actual_history_seconds": 1.24,
+      "attention_dim": 64,
+      "attention_heads": 4,
+      "attention_tokens": 28,
+      "block_count": 5,
+      "cached": {
+        "all_valid": true,
+        "environment_steps_per_second": 947660.7940813068,
+        "environments": 4096,
+        "mean_seconds": 0.004322221648908453,
+        "p95_seconds": 0.004594578793330584,
+        "peak_gpu_bytes": 2493955584,
+        "persistent_bytes": 1108156032,
+        "reset_seconds": {
+          "full": 0.7354535710037453,
+          "partial": 0.14663722399563994
+        }
+      },
+      "comparison": "history-plus-capacity",
+      "dilations": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "family": "hybrid",
+      "feature_width": 64,
+      "model": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "consistency_intervals": 40,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "embedding_dim": 32,
+        "episode_training": true,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "reset_backfill": "recorded",
+        "sample_seconds": 0.005,
+        "temporal_memory": "mamba_stateful"
+      },
+      "parameters": 393296,
+      "per_layer_sampling_ages_ms": [
+        [
+          0,
+          100,
+          200,
+          300,
+          400,
+          500,
+          600,
+          800,
+          1000,
+          1200
+        ],
+        [
+          0,
+          100,
+          200,
+          300,
+          400,
+          600,
+          800,
+          1000
+        ],
+        [
+          0,
+          200,
+          400,
+          600,
+          800
+        ],
+        [
+          0,
+          200,
+          400,
+          600
+        ],
+        [
+          0
+        ]
+      ],
+      "receptive_field": 249,
+      "requested_history_seconds": 1.24,
+      "signature": "d0fbc8297462c9aa",
+      "status": "measured",
+      "training": {
+        "optimizer_steps": 4,
+        "peak_gpu_bytes": 119866368,
+        "reference_per_second": 1.1444588066365435,
+        "reference_updates": 3.8696875,
+        "scored_steps": 24766,
+        "seconds": 3.381237907000468,
+        "updates": 4
+      }
+    },
+    "tcn-0.2s": {
+      "actual_history_seconds": 0.2,
+      "attention_dim": 64,
+      "attention_heads": 4,
+      "attention_tokens": 5,
+      "block_count": 3,
+      "cached": {
+        "all_valid": true,
+        "environment_steps_per_second": 3575298.9942475865,
+        "environments": 4096,
+        "mean_seconds": 0.001145638450543629,
+        "p95_seconds": 0.0011865604945342056,
+        "peak_gpu_bytes": 313413120,
+        "persistent_bytes": 121394472,
+        "reset_seconds": {
+          "full": 0.061775609996402636,
+          "partial": 0.020614408000255935
+        }
+      },
+      "comparison": "history-plus-capacity",
+      "dilations": [
+        1,
+        1,
+        3
+      ],
+      "family": "tcn",
+      "feature_width": 64,
+      "model": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0.0,
+            160.0
+          ],
+          [
+            0.0,
+            120.0
+          ],
+          [
+            0.0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "consistency_intervals": 40,
+        "dilations": [
+          1,
+          1,
+          3
+        ],
+        "embedding_dim": 32,
+        "episode_training": true,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "reset_backfill": "recorded",
+        "sample_seconds": 0.005,
+        "temporal_memory": "none"
+      },
+      "parameters": 200464,
+      "per_layer_sampling_ages_ms": [
+        [
+          0.0,
+          160.0
+        ],
+        [
+          0.0,
+          120.0
+        ],
+        [
+          0.0
+        ]
+      ],
+      "receptive_field": 41,
+      "requested_history_seconds": 0.2,
+      "signature": "09c7dcda951cf81f",
+      "status": "measured",
+      "training": {
+        "optimizer_steps": 4,
+        "peak_gpu_bytes": 84931584,
+        "reference_per_second": 2.1854508056860933,
+        "reference_updates": 3.8696875,
+        "scored_steps": 24766,
+        "seconds": 1.770658708002884,
+        "updates": 4
+      }
+    },
+    "tcn-0.5s": {
+      "actual_history_seconds": 0.52,
+      "attention_dim": 64,
+      "attention_heads": 4,
+      "attention_tokens": 11,
+      "block_count": 4,
+      "cached": {
+        "all_valid": true,
+        "environment_steps_per_second": 2373314.2834447017,
+        "environments": 4096,
+        "mean_seconds": 0.0017258565494557843,
+        "p95_seconds": 0.0018634628992003853,
+        "peak_gpu_bytes": 886859264,
+        "persistent_bytes": 382499112,
+        "reset_seconds": {
+          "full": 0.1582862329960335,
+          "partial": 0.05325065000215545
+        }
+      },
+      "comparison": "history-plus-capacity",
+      "dilations": [
+        1,
+        2,
+        3,
+        7
+      ],
+      "family": "tcn",
+      "feature_width": 64,
+      "model": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0.0,
+            120.0,
+            240.0,
+            360.0,
+            480.0
+          ],
+          [
+            0.0,
+            200.0,
+            400.0
+          ],
+          [
+            0.0,
+            280.0
+          ],
+          [
+            0.0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "consistency_intervals": 40,
+        "dilations": [
+          1,
+          2,
+          3,
+          7
+        ],
+        "embedding_dim": 32,
+        "episode_training": true,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "reset_backfill": "recorded",
+        "sample_seconds": 0.005,
+        "temporal_memory": "none"
+      },
+      "parameters": 246160,
+      "per_layer_sampling_ages_ms": [
+        [
+          0.0,
+          120.0,
+          240.0,
+          360.0,
+          480.0
+        ],
+        [
+          0.0,
+          200.0,
+          400.0
+        ],
+        [
+          0.0,
+          280.0
+        ],
+        [
+          0.0
+        ]
+      ],
+      "receptive_field": 105,
+      "requested_history_seconds": 0.5,
+      "signature": "de711558432dbd22",
+      "status": "measured",
+      "training": {
+        "optimizer_steps": 4,
+        "peak_gpu_bytes": 93625344,
+        "reference_per_second": 5.746624315455896,
+        "reference_updates": 3.8696875,
+        "scored_steps": 24766,
+        "seconds": 0.6733844580012374,
+        "updates": 4
+      }
+    },
+    "tcn-1.24s": {
+      "actual_history_seconds": 1.24,
+      "attention_dim": 64,
+      "attention_heads": 4,
+      "attention_tokens": 28,
+      "block_count": 5,
+      "cached": {
+        "all_valid": true,
+        "environment_steps_per_second": 1284420.050962292,
+        "environments": 4096,
+        "mean_seconds": 0.0031889878991933074,
+        "p95_seconds": 0.003483832348138094,
+        "peak_gpu_bytes": 2410710528,
+        "persistent_bytes": 1066212992,
+        "reset_seconds": {
+          "full": 0.7303701369964983,
+          "partial": 0.1456188130105147
+        }
+      },
+      "comparison": "history-plus-capacity",
+      "dilations": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "family": "tcn",
+      "feature_width": 64,
+      "model": {
+        "architecture": "tcn_pyramid_attention",
+        "attention_ages_ms": [
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            800,
+            1000,
+            1200
+          ],
+          [
+            0,
+            100,
+            200,
+            300,
+            400,
+            600,
+            800,
+            1000
+          ],
+          [
+            0,
+            200,
+            400,
+            600,
+            800
+          ],
+          [
+            0,
+            200,
+            400,
+            600
+          ],
+          [
+            0
+          ]
+        ],
+        "attention_alpha": 0.1,
+        "attention_backend": "custom",
+        "attention_dim": 64,
+        "attention_dropout": 0.0,
+        "attention_heads": 4,
+        "attention_projection_bias": false,
+        "channels": 64,
+        "consistency_intervals": 40,
+        "dilations": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "embedding_dim": 32,
+        "episode_training": true,
+        "kernel_size": 5,
+        "long_intervals": 40,
+        "mamba_d_conv": 4,
+        "mamba_d_state": 16,
+        "mamba_expand": 2,
+        "property_conditioning": "film",
+        "property_dim": 24,
+        "reset_backfill": "recorded",
+        "sample_seconds": 0.005,
+        "temporal_memory": "none"
+      },
+      "parameters": 291664,
+      "per_layer_sampling_ages_ms": [
+        [
+          0,
+          100,
+          200,
+          300,
+          400,
+          500,
+          600,
+          800,
+          1000,
+          1200
+        ],
+        [
+          0,
+          100,
+          200,
+          300,
+          400,
+          600,
+          800,
+          1000
+        ],
+        [
+          0,
+          200,
+          400,
+          600,
+          800
+        ],
+        [
+          0,
+          200,
+          400,
+          600
+        ],
+        [
+          0
+        ]
+      ],
+      "receptive_field": 249,
+      "requested_history_seconds": 1.24,
+      "signature": "a31095d61ced7b37",
+      "status": "measured",
+      "training": {
+        "optimizer_steps": 4,
+        "peak_gpu_bytes": 112698880,
+        "reference_per_second": 6.428953436369163,
+        "reference_updates": 3.8696875,
+        "scored_steps": 24766,
+        "seconds": 0.601915620994987,
+        "updates": 4
+      }
+    }
+  },
+  "runtime_estimate": {
+    "comparison": "history-plus-capacity",
+    "concurrency_reason": "One-worker pilot only; concurrency has not been benchmarked",
+    "early_stopping_applied": false,
+    "final_reference_budget_per_run": 40000,
+    "note": "Four-update pilots include startup effects; LR/batch combinations use the same per-architecture rate estimate.",
+    "reference_updates_upper_bound": 480000,
+    "screening_training_hours": 37.65223630246184,
+    "status": "measured",
+    "training_hours_range": [
+      71.56395443641124,
+      82.03046766268885
+    ],
+    "validation_and_inference_time_included": false,
+    "workers": 1
+  },
+  "notes": [
+    "Four optimizer updates per architecture, effective batch 16, microbatch 2, all loss/recurrent weights active.",
+    "Single-worker measurements; first-use initialization influences short-pilot throughput.",
+    "Cached benchmark uses 4096 environments, five warm-up steps and 20 timed steps.",
+    "No full screening/final training was launched."
+  ]
+}

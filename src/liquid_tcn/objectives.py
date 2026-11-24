@@ -30,12 +30,15 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
     # counts[h] counts valid vectors for head h, not batches. Sum scalar
     # errors across heads and divide by 3*sum(counts): each valid coordinate
     # has equal weight even when heads have different label coverage.
+    score = batch.get('score_endpoints')
+    if score is not None:
+        valid = valid & score[..., None]
     counts = valid.sum((0, 1))
-    if (counts == 0).any():
+    if score is None and (counts == 0).any():
         raise ValueError('Empty supervision for one or more heads')
     sums = torch.where(valid[..., None], error, torch.zeros_like(error)).sum((0, 1, 3))
     # Each valid scalar has equal weight; missing labels never dilute a head.
-    supervised_loss = sums.sum() / (3 * counts.sum())
+    supervised_loss = sums.sum() / (3 * counts.sum().clamp_min(1))
     if physics_dtype not in ('float32', 'float64'):
         raise ValueError('Physics arithmetic must be float32 or float64')
     dtype = getattr(torch, physics_dtype)
@@ -57,7 +60,7 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
             interval_valid=batch['interval_valid'][:, 1:],
             window_intervals=min(40, prediction.shape[1]-1) if long_intervals is None else long_intervals,
             window_seconds=.005*(min(40, prediction.shape[1]-1) if long_intervals is None else long_intervals))
-        physics = discrete_constraints(**args)
+        physics = discrete_constraints(**args, score_endpoints=score)
         horizon = args['window_intervals']
         if prediction.shape[1]-1 > horizon:
             # Each rolling 41-state slice has its own fixed initial base origin.
@@ -79,10 +82,21 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
             for key in ('residual','normalized','valid'):
                 long[key] = long[key].reshape(prediction.shape[0],count,*long[key].shape[1:])
             physics['long'] = long
-        # Even during supervised pretraining (zero physics weights), report and
-        # validate constraint coverage; an empty masked zero is not a good fit.
+        if score is not None:
+            term = physics['long']
+            ending = score[:, horizon:]
+            if term['valid'].ndim == 1:
+                ending = score[:, -1]
+            term['valid'] = term['valid'] & ending
+            term['count'] = term['valid'].sum()
+            masked = torch.where(term['valid'][..., None, None], term['normalized'], 0.)
+            term['loss_by_channel'] = masked.square().sum(-1).sum(tuple(range(term['valid'].ndim))) / term['count'].clamp_min(1)
+            term['loss'] = term['loss_by_channel'].sum()
+            term['has_valid'] = term['count'] > 0
+        # A shortened stateful chunk can have zero eligible constraints. Other
+        # modes retain their existing coverage requirement.
         for horizon in ('short', 'long'):
-            if not physics[horizon]['has_valid']:
+            if score is None and not physics[horizon]['has_valid']:
                 raise ValueError(f'Empty valid {horizon} constraints; refusing a zero-loss success')
             if not torch.isfinite(physics[horizon]['loss']):
                 raise FloatingPointError(f'Nonfinite {horizon} physics')
@@ -109,8 +123,8 @@ def loss_components(result, lambda_short, lambda_long):
     sums, counts = packed[:5], packed[5:10]
     components = {}
     for head, total, count in zip(HEADS, sums, counts):
-        components[f'supervised/{head}'] = total / (3 * count)
-        components[f'supervised_contribution/{head}'] = total / (3 * sum(counts))
+        components[f'supervised/{head}'] = total / (3 * count) if count else 0.
+        components[f'supervised_contribution/{head}'] = total / (3 * sum(counts)) if sum(counts) else 0.
     for horizon, weight in (('short', lambda_short), ('long', lambda_long)):
         values = packed[10:13] if horizon == 'short' else packed[13:16]
         for channel, value in zip(('r', 'P', 'H'), values):

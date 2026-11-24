@@ -5,7 +5,7 @@ from liquid_tcn.ported.storage import ChunkWriter, atomic_json
 from test_ported_discrete import row
 
 
-def make_attempt(path, samples=330, shift=0., reset_at=None, split_event=False):
+def make_attempt(path, samples=330, shift=0., reset_at=None, split_event=False, initial_reset=False):
     path = Path(path)
     primary = ChunkWriter(path, chunk_size=37)
     events = ChunkWriter(path/'events', chunk_size=23)
@@ -13,7 +13,7 @@ def make_attempt(path, samples=330, shift=0., reset_at=None, split_event=False):
     seq = 0
     for i in range(samples):
         ep = int(reset_at is not None and i >= reset_at)
-        r = row(i*5, seq, ep=(ep, 0), n=5 if i else 0, reset=(i==reset_at, False))
+        r = row(i*5, seq, ep=(ep, 0), n=5 if i else 0, reset=(i == reset_at or (i == 0 and initial_reset), i == 0 and initial_reset))
         seq += 1
         r['held_acceleration_W'] = np.zeros((2, 6))
         r['z'] = np.zeros((2, 15)); r['z'][:, 2] = -9.81

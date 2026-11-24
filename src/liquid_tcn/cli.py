@@ -75,9 +75,14 @@ def main():
                 from .model import ModelConfig
                 from .sequences import SequenceDataset
                 mc=ModelConfig(**(selected.get('model') or (saved['model_config'] if saved else WindowDataset(data).manifest['model'])))
-                ds=(SequenceDataset(data,mc,resolved['sequence_burn_in'],resolved['sequence_scored_intervals'])
-                    if mc.temporal_memory=='mamba' else WindowDataset(data))
-                budget = resolved['epochs'] * math.ceil(len(ds)/resolved['batch_size'])
+                if mc.temporal_memory == 'mamba_stateful':
+                    from .episode_chunks import EpisodeChunks
+                    chunks = EpisodeChunks(data, mc, resolved['batch_size'], resolved['seed'])
+                    budget = chunks.updates_for_epochs(resolved['epochs'])
+                else:
+                    ds = (SequenceDataset(data, mc, resolved['sequence_burn_in'], resolved['sequence_scored_intervals'])
+                          if mc.temporal_memory != 'none' else WindowDataset(data))
+                    budget = resolved['epochs'] * math.ceil(len(ds) / resolved['batch_size'])
             else:
                 budget = resolved['updates']
             policy = standalone_policy(data, output, monitoring, budget,
@@ -119,7 +124,7 @@ def main():
         provider=None
         if selected_mode=='streaming':
             from .streaming_assessment import CachedWindowPredictions, window_streamer
-            if model.config.temporal_memory == 'mamba':
+            if model.config.temporal_memory != 'none':
                 from .streaming_assessment import RecurrentPredictions
                 provider=RecurrentPredictions(model,norm,dataset,args.device,streaming=True)
             elif args.max_batches is not None or args.split!='test':

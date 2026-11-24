@@ -18,12 +18,12 @@ MONITOR_EVERY = 1000
 RECOVERY_EVERY = 200
 
 
-def monitoring_subset(data, path, seed=1729, model=None):
+def monitoring_subset(data, path, seed=1729, model=None, fraction=.20):
     if model is not None:
         from .model import ModelConfig
         model = ModelConfig(**model) if isinstance(model,dict) else model
-        if model.temporal_memory == 'mamba':
-            return segment_monitoring_subset(data,path,seed)
+        if model.temporal_memory != 'none':
+            return segment_monitoring_subset(data, path, seed, stateful=model.temporal_memory == 'mamba_stateful', fraction=fraction)
     path = Path(path)
     fingerprint = digest(Path(data)/'manifest.json')
     if path.exists():
@@ -39,7 +39,7 @@ def monitoring_subset(data, path, seed=1729, model=None):
             key = json.dumps([series.get(k) for k in ('group','robot','payload_id')])
             groups.setdefault(key, []).append(sid)
     counts = {key: int(np.isin(ds.index['series'], ids).sum()) for key,ids in groups.items()}
-    size = max(1, int(math.floor(len(ds)*.05+.5)))
+    size = max(1, int(math.floor(len(ds)*fraction+.5)))
     quotas = {key: int(size*n/len(ds)) for key,n in counts.items()}
     remainder = sorted(groups, key=lambda k: (-(size*counts[k]/len(ds)-quotas[k]),k))
     for key in remainder[:size-sum(quotas.values())]:
@@ -57,11 +57,29 @@ def monitoring_subset(data, path, seed=1729, model=None):
 
 @torch.no_grad()
 def monitoring_mse(model, loader, normalization, device, cancelled=lambda:False, *,
-                   lambda_short=0., lambda_long=0., physics_dtype='float64'):
+                   lambda_short=0., lambda_long=0., physics_dtype='float64', episode_ids=None):
     """Fixed MSE selection plus physics objectives; no lag or group diagnostics."""
     model.eval()
+    if model.config.temporal_memory == 'mamba_stateful':
+        from .benchmark import CancellableLoader
+        class Cancellation:
+            def cancelled(self):
+                return cancelled()
+        report = evaluate(model, CancellableLoader(loader, Cancellation()), normalization, device,
+                          lambda_short=lambda_short, lambda_long=lambda_long, physics_dtype=physics_dtype,
+                          episode_ids=episode_ids)
+        losses = report['losses']
+        if losses is None:
+            raise ValueError('Empty monitoring supervision or physics')
+        physics = {}
+        for horizon in ('short', 'long'):
+            channels = {name: losses['components'][f'{horizon}/{name}'] for name in ('r', 'P', 'H')}
+            physics[horizon] = dict(loss=losses[horizon], channels=channels, valid_count=losses['physics_counts'][horizon])
+        return dict(scope='monitor_subset', selection_metric=report['selection_metric'], physics=physics,
+                    lambda_short=lambda_short, lambda_long=lambda_long, physics_objective=losses['secondary'],
+                    total_objective=losses['loss'], valid_counts=losses['supervised_counts'], windows=report['windows'])
     provider = None
-    if model.config.temporal_memory == 'mamba':
+    if model.config.temporal_memory != 'none':
         from .streaming_assessment import RecurrentPredictions
         provider = RecurrentPredictions(model,normalization,loader.dataset,device,cancelled)
     sums = np.zeros(5); counts = np.zeros(5,dtype=np.int64); windows = 0
@@ -122,7 +140,7 @@ class StageValidation:
     def attach(self, model, norm, dataset, full_loader, config, output, saved, update, save, stopped, log, writer):
         self.model,self.norm,self.dataset,self.full_loader = model,norm,dataset,full_loader
         self.config,self.output,self.save,self.stopped,self.log,self.writer = config,Path(output),save,stopped,log,writer
-        if model.config.temporal_memory == 'mamba':
+        if model.config.temporal_memory != 'none':
             self.subset = monitoring_subset(dataset.path,self.subset_path,
                 seed=self.subset.get('seed',1729),model=model.config)
             self.subset_hash = digest(self.subset_path)
@@ -153,7 +171,8 @@ class StageValidation:
                 from .train import weights
                 short,long = weights(self.config,update-1)
                 report = monitoring_mse(self.model,self.loader,self.norm,self.config['device'],self.cancelled,
-                    lambda_short=short,lambda_long=long,physics_dtype=self.config['physics_dtype'])
+                    lambda_short=short,lambda_long=long,physics_dtype=self.config['physics_dtype'],
+                    episode_ids=self.subset.get('episode_ids'))
             except InterruptedError:
                 self.stopped.set()
                 return
@@ -263,22 +282,22 @@ def standalone_policy(data, output, settings, budget, model=None):
     output.mkdir(parents=True, exist_ok=True)
     if not subset.exists() and settings.get('subset'):
         atomic_json(subset, json.loads(Path(settings['subset']).read_text()))
-    monitoring_subset(data, subset, seed=settings.get('seed', 1729), model=model)
+    monitoring_subset(data, subset, seed=settings.get('seed', 1729), model=model, fraction=settings.get('fraction', .20))
     atomic_json(output/'monitoring.json', settings)
     return StageValidation('6', budget, subset, selection_root=output/'selection')
 
 
-def segment_monitoring_subset(data, path, seed=1729):
+def segment_monitoring_subset(data, path, seed=1729, stateful=False, fraction=.20):
     import fcntl
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(str(path)+'.lock','a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
-        return _segment_monitoring_subset(data,path,seed)
+        return _segment_monitoring_subset(data,path,seed,stateful,fraction)
 
 
-def _segment_monitoring_subset(data, path, seed=1729):
-    """Persist a stratified 5% sample of complete valid validation segments.
+def _segment_monitoring_subset(data, path, seed=1729, stateful=False, fraction=.20):
+    """Persist a stratified configurable sample of complete valid validation segments.
 
     All prepared windows inside chosen segments contribute to the familiar
     normalized supervised metric. State is inferred from each segment's start,
@@ -287,20 +306,28 @@ def _segment_monitoring_subset(data, path, seed=1729):
     from .trajectories import Trajectories
     from .sequences import contextual_segments
     path = Path(path)
+    unit = 'episode' if stateful else 'segment'
     if path.exists():
         prior = json.loads(path.read_text())
-        if prior.get('sampling_unit') == 'segment':return prior
+        if prior.get('sampling_unit') == unit:
+            return prior
     reader = Trajectories(data,'validation')
     ds = reader.dataset
     groups = {}
+    if stateful:
+        from .episode_chunks import episode_start, episode_end
     for series in reader.series:
         key = json.dumps([series.get(k) for k in ('group','robot','payload_id')])
-        for start,end in contextual_segments(reader,series):
+        if stateful:
+            spans = [(0, episode_end(reader, series))] if episode_start(reader, series) is not None else []
+        else:
+            spans = contextual_segments(reader, series)
+        for start,end in spans:
             if end-start >= 41:
                 groups.setdefault(key,[]).append((series['id'],start,end))
     total = sum(map(len,groups.values()))
     if not total:raise ValueError('No complete validation segments')
-    size = max(1,round(.05*total))
+    size = max(1,round(fraction*total))
     quotas = {k:int(size*len(v)/total) for k,v in groups.items()}
     order = sorted(groups,key=lambda k:(-(size*len(groups[k])/total-quotas[k]),k))
     for k in order[:size-sum(quotas.values())]:quotas[k]+=1
@@ -309,10 +336,12 @@ def _segment_monitoring_subset(data, path, seed=1729):
     for k in sorted(groups):
         chosen.extend(groups[k][i] for i in rng.choice(len(groups[k]),quotas[k],replace=False))
     indices=[]
-    for sid,start,end in chosen:
+    for sid,start,end in ([] if stateful else chosen):
         indices.extend(np.flatnonzero((ds.index['series']==sid)&(ds.index['end']>=start+40)&(ds.index['end']<end)).tolist())
-    value=dict(sampling_unit='segment',seed=seed,segments=[list(s) for s in sorted(chosen)],indices=sorted(indices),
+    value=dict(sampling_unit=unit,seed=seed,segments=[list(s) for s in sorted(chosen)],indices=sorted(indices),
                selected_segments=len(chosen),total_segments=total,segment_fraction=len(chosen)/total,
                windows=len(indices),total_windows=len(ds),fraction=len(indices)/len(ds))
+    if stateful:
+        value.update(episode_ids=sorted(sid for sid, _, _ in chosen), fraction=len(chosen)/total)
     atomic_json(path,value)
     return value

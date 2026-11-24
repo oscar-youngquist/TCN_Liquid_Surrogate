@@ -44,7 +44,7 @@ def discrete_constraints(*, r_B, v_B, S_B, F_average_B, tau_average_O_B,
                          x_O_W, u_O_W, omega_B, q_WB_wxyz, h, mass, gravity_W,
                          interior_dimensions, episode_id, state_valid, interval_valid,
                          history_valid, reference_W=None, interval_seconds=.005,
-                         window_seconds=.2, window_intervals=40):
+                         window_seconds=.2, window_intervals=40, score_endpoints=None):
     """Return short and whole-window residuals/losses in channel order (r,P,H).
 
     mass [B,N], gravity [B,N,3], interior_dimensions [B,3], h [B,N-1].
@@ -162,7 +162,8 @@ def discrete_constraints(*, r_B, v_B, S_B, F_average_B, tau_average_O_B,
         window_valid &= torch.isclose(duration,duration.new_tensor(window_seconds),rtol=0,atol=tolerance)
     if window_intervals is not None:
         window_valid &= N-1 == window_intervals
-    return dict(short=_result(residual,scales,valid),
+    short_valid = valid if score_endpoints is None else valid & score_endpoints[:, 1:]
+    return dict(short=_result(residual,scales,short_valid),
                 long=_result(long_residual,long_scales,window_valid),
                 assumptions_valid=assumptions,constant_mass=constant_mass,uniform_gravity=uniform_gravity,
                 X_W=X,U_W=U,P_W=P,H_A_W=H,force_impulse_W=IF,moment_impulse_A_W=Itau,

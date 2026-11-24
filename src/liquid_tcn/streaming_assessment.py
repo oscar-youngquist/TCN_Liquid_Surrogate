@@ -15,17 +15,30 @@ class CachedWindowPredictions:
         self.directory=Path(directory);self.norm=normalization
         self.long_intervals=long_intervals;self.cache_size=cache_size;self.cache=OrderedDict()
 
+    def _series(self, sid):
+        if sid not in self.cache:
+            self.cache[sid] = np.load(self.directory/f'series-{sid:06d}.npy', mmap_mode='r')
+            if len(self.cache) > self.cache_size:
+                self.cache.popitem(last=False)
+        self.cache.move_to_end(sid)
+        return self.cache[sid]
+
     def __call__(self, batch):
-        values=np.empty((len(batch['series']),self.long_intervals+1,5,3),dtype=np.float32)
-        for i,(sid,end) in enumerate(zip(batch['series'].tolist(),batch['end'].tolist())):
-            if sid not in self.cache:
-                self.cache[sid]=np.load(self.directory/f'series-{sid:06d}.npy',mmap_mode='r')
-                if len(self.cache)>self.cache_size:self.cache.popitem(last=False)
-            self.cache.move_to_end(sid)
-            values[i]=self.cache[sid][end-self.long_intervals:end+1]
+        values = np.stack([self._series(sid)[end-self.long_intervals:end+1]
+                           for sid, end in zip(batch['series'].tolist(), batch['end'].tolist())])
         if not np.isfinite(values).all():
             raise ValueError('Streaming cache lacks valid predictions for an eligible test window')
-        return self.norm.normalize('targets',torch.from_numpy(values))
+        return self.norm.normalize('targets', torch.from_numpy(values))
+
+    def chunk(self, batch):
+        width = batch['targets'].shape[1]
+        values = np.zeros((len(batch['series']), width, 5, 3), dtype=np.float32)
+        for i, (sid, start, end) in enumerate(zip(batch['series'].tolist(), batch['start'].tolist(), batch['end'].tolist())):
+            begin = max(0, start - self.long_intervals)
+            sequence = self._series(sid)[begin:end+1]
+            left = self.long_intervals - (start - begin)
+            values[i, left:left+len(sequence)] = sequence
+        return self.norm.normalize('targets', torch.from_numpy(values))
 
 
 def compare_assessments(directory, window_only=False):
@@ -119,17 +132,16 @@ class RecurrentPredictions(CachedWindowPredictions):
         self.model, self.device = model,device
         self.cancelled,self.streaming = cancelled,streaming
 
-    def __call__(self, batch):
+    def _series(self, sid):
         from .sequences import recurrent_series
-        for sid in set(batch['series'].tolist()):
-            path = self.directory/f'series-{sid:06d}.npy'
-            if not path.exists():
-                series = self.reader.dataset.series[sid]
-                out = np.lib.format.open_memmap(path,mode='w+',dtype='float32',shape=(series['rows'],5,3))
-                recurrent_series(self.reader,series,self.model,self.norm,out,self.device,
-                                 cancelled=self.cancelled,streaming=self.streaming)
-                out.flush();del out
-        return super().__call__(batch)
+        path = self.directory/f'series-{sid:06d}.npy'
+        if not path.exists():
+            series = self.reader.dataset.series[sid]
+            out = np.lib.format.open_memmap(path,mode='w+',dtype='float32',shape=(series['rows'],5,3))
+            recurrent_series(self.reader,series,self.model,self.norm,out,self.device,
+                             cancelled=self.cancelled,streaming=self.streaming)
+            out.flush();del out
+        return super()._series(sid)
 
     def close(self):
         self.cache.clear()

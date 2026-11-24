@@ -114,7 +114,7 @@ class Metrics:
 
 @torch.no_grad()
 def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
-             supervised='mse', huber_delta=1., lambda_short=0., lambda_long=0., physics_dtype='float64', prediction_provider=None):
+             supervised='mse', huber_delta=1., lambda_short=0., lambda_long=0., physics_dtype='float64', prediction_provider=None, episode_ids=None):
     model.eval()
     overall, ground_truth, groups = Metrics(), Metrics(), {}
     maneuvers = {}
@@ -122,18 +122,39 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
     dataset = loader.dataset
     dataset.check_model(model.config)
     owned_provider = None
-    if prediction_provider is None and model.config.temporal_memory == 'mamba':
+    stateful = model.config.temporal_memory == 'mamba_stateful'
+    if stateful:
+        from .episode_chunks import EpisodeChunks
+        episode_batch = min(8, getattr(getattr(loader, 'loader', loader), 'batch_size', 8))
+        chunks = EpisodeChunks(dataset.path, model.config, episode_batch, 0,
+                               split=dataset.split, series_ids=episode_ids)
+        eligible = sum(len(entries) for entries in chunks.schedule)
+        evaluated_episodes, evaluated_steps = set(), 0
+        cancelled = getattr(getattr(loader, 'barrier', None), 'cancelled', lambda: False)
+        batches = chunks
+    else:
+        eligible = len(dataset)
+        batches = loader
+    if not stateful and prediction_provider is None and model.config.temporal_memory != 'none':
         from .streaming_assessment import RecurrentPredictions
         owned_provider = RecurrentPredictions(model,normalization,dataset,device,
             cancelled=getattr(getattr(loader,'barrier',None),'cancelled',lambda:False))
         prediction_provider = owned_provider
-    batches = loader if max_batches is None else islice(loader, max_batches)
+    batches = batches if max_batches is None else islice(batches, max_batches)
     for batch in batches:
         cpu_batch = batch
         batch = to_device(batch, device)
-        prediction = (prediction_provider(cpu_batch).to(device) if prediction_provider is not None
-                      else model(normalization.normalize('motion', batch['motion']),
-                                 normalization.normalize('properties', batch['properties'])))
+        if stateful:
+            if cancelled():
+                raise InterruptedError('Episode evaluation interrupted')
+            evaluated_episodes.update(cpu_batch['series'].tolist())
+            evaluated_steps += int(cpu_batch['length'].sum())
+            prediction = (chunks.predict(model, normalization, batch) if prediction_provider is None
+                          else prediction_provider.chunk(cpu_batch).to(device))
+        else:
+            prediction = (prediction_provider(cpu_batch).to(device) if prediction_provider is not None
+                          else model(normalization.normalize('motion', batch['motion']),
+                                     normalization.normalize('properties', batch['properties'])))
         result = objective(prediction, batch, normalization, supervised=supervised,
                            huber_delta=huber_delta, physics_dtype=physics_dtype,
                            long_intervals=model.config.long_intervals)
@@ -144,9 +165,13 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
         else:
             target = normalization.normalize('targets', batch['targets'].to(prediction.dtype))
             valid = batch['target_valid'].bool() & torch.isfinite(target).all(-1)
+            if stateful:
+                valid = valid & batch['score_endpoints'][..., None]
             safe = torch.where(valid[..., None], target, torch.zeros_like(target))
             error = torch.where(valid[..., None], (prediction-safe).square(), torch.zeros_like(prediction))
             mse_sums += error.sum((0, 1, 3)).cpu().numpy()
+        if stateful:
+            cpu_batch = dict(cpu_batch, target_valid=cpu_batch['target_valid'] & cpu_batch['score_endpoints'][..., None])
         prepared = batch_metrics(result['physical'], cpu_batch, result)
         overall.add(result['physical'], batch, result, prepared=prepared)
         truth = objective(normalization.normalize('targets', batch['targets']), batch, normalization,
@@ -169,14 +194,19 @@ def evaluate(model, loader, normalization, device='cpu', max_batches=None, *,
         normalized_mse_per_head=(mse_sums / np.maximum(3*counts, 1)).tolist() if counts.sum() else None,
         ground_truth_conservation=ground_truth.conservation_report() or None,
         per_robot_payload={k: v.report() for k, v in groups.items()},
-        coverage=dict(eligible_windows=len(dataset), evaluated_windows=overall.windows,
-            fraction=overall.windows/len(dataset) if len(dataset) else 0,
+        coverage=dict(eligible_windows=eligible, evaluated_windows=overall.windows,
+            fraction=overall.windows/eligible if eligible else 0,
             preparation_counts=dataset.manifest['counts']),
         per_maneuver={k:v.report() for k,v in maneuvers.items()} or None,
         maneuver_metadata='recorded prepared-series maneuver field' if maneuvers else 'unavailable',
-        weighting='window-weighted; overlapping endpoints counted per window',
+        weighting=('unique chronological endpoints and intervals' if stateful else
+                   'window-weighted; overlapping endpoints counted per window'),
         units=dict(force='N', moment='N m', r_B='m', v_B='m/s', S_B='kg m^2/s'),
         lag_definition='demeaned vector cross-correlation within each window, +/- 50 ms; positive means prediction delayed')
+    if stateful:
+        report['coverage'].update(eligible_episodes=len(chunks.episodes),
+                                  evaluated_episodes=len(evaluated_episodes), evaluated_steps=evaluated_steps,
+                                  eligible_steps=sum(end for _, _, end in chunks.episodes.values()))
     # Reduce numerators and valid counts over the entire validation pass before
     # forming losses. Averaging per-batch means would bias partial batches.
     losses = None

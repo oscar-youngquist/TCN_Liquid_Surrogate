@@ -72,7 +72,7 @@ def assess_checkpoint(data, checkpoint, destination, shared, config, device,
             def cancelled(self):return cancelled()
         norm=Normalization(saved['normalization'])
         provider=None
-        if inference_mode=='streaming' or model.config.temporal_memory == 'mamba':
+        if inference_mode=='streaming' or model.config.temporal_memory != 'none':
             from .trajectories import cache_predictions
             from .streaming_assessment import CachedWindowPredictions
             cache_predictions(data,checkpoint,destination/'predictions',device,block_rows,cancelled,inference_mode)
@@ -89,7 +89,8 @@ def assess_checkpoint(data, checkpoint, destination, shared, config, device,
             if provider is not None:
                 report['prediction_cache_profile']=read_json(destination/'predictions/complete.json')
             if cancelled():raise InterruptedError('Test assessment interrupted')
-            report['weighting']='overlapping eligible windows'
+            if model.config.temporal_memory != 'mamba_stateful':
+                report['weighting']='overlapping eligible windows'
             atomic_json(report_path,report)
         finally:close_loader(loader)
         del model

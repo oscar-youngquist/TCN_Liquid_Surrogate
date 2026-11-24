@@ -72,6 +72,12 @@ class PyramidAttentionTCN(LiquidTCN):
         if c.temporal_memory == 'mamba':
             from .temporal_memory import MambaMemory
             self.temporal = MambaMemory(c)
+        elif c.temporal_memory == 'mamba_stateful':
+            from .stateful_mamba import StatefulMamba
+            self.temporal = StatefulMamba(c)
+        elif c.temporal_memory == 'mingru':
+            from .temporal_memory import MinGRUMemory
+            self.temporal = MinGRUMemory(c)
 
 
     def fuse(self, query, memory, return_attention=False):
@@ -83,8 +89,8 @@ class PyramidAttentionTCN(LiquidTCN):
         fused = query + self.alpha * attended.squeeze(-2)
         return (fused, weights) if return_attention else fused
 
-    def forward(self, motion, properties, contextual_only=True, return_attention=False, memory_state=None):
-        if self.config.temporal_memory == 'mamba' and not contextual_only:
+    def forward(self, motion, properties, contextual_only=True, return_attention=False, memory_state=None, return_state=False, memory_lengths=None):
+        if self.config.temporal_memory != 'none' and not contextual_only:
             # Never feed padded/startup backbone features into recurrent state.
             raise ValueError('Recurrent forward requires contextual_only=True')
         start = self.config.receptive_field - 1 if contextual_only else 0
@@ -105,10 +111,15 @@ class PyramidAttentionTCN(LiquidTCN):
                 memories.append(x.transpose(1, 2)[:, positions.clamp_min(0)])
         result = self.fuse(x.transpose(1, 2)[:, start:], torch.cat(memories, dim=2), return_attention)
         features, weights = result if return_attention else (result, None)
-        if self.config.temporal_memory == 'mamba':
+        if self.config.temporal_memory == 'mamba_stateful':
+            recurrent, memory_state = self.temporal(features, memory_state, memory_lengths)
+            features = features + getattr(self.temporal, "residual_scale", 1.) * (recurrent - features)
+        elif self.config.temporal_memory != 'none':
             features = self.temporal(features, memory_state)
         out = torch.stack([head(features) for head in self.heads], -2)
         if not contextual_only:
             # Diagnostic full-length output explicitly marks startup as unusable.
             out = out.masked_fill((times < self.config.receptive_field-1)[None, :, None, None], float('nan'))
+        if return_state:
+            return out, memory_state
         return (out, weights) if return_attention else out

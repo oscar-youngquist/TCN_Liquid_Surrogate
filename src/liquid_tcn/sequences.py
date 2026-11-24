@@ -97,6 +97,39 @@ def recurrent_series(reader, series, model, norm, out, device, block_rows=2048, 
     """
     import torch
     from .model import CachedInference
+    if model.config.temporal_memory == 'mamba_stateful':
+        from .episode_chunks import episode_start, episode_end, chunk_motion
+        out[:] = np.nan
+        reset = episode_start(reader, series)
+        end = episode_end(reader, series) if reset is not None else 0
+        if not end:
+            return
+        properties = torch.as_tensor(series['properties'], dtype=torch.float32, device=device)[None]
+        normalized = norm.normalize('properties', properties)
+        reset_input = torch.as_tensor(reset, dtype=torch.float32, device=device)[None]
+        if streaming:
+            cache = CachedInference(model, norm, 1)
+            cache.set_properties(properties)
+            cache.initialize_reset(reset_input)
+        else:
+            state = model.temporal.initial_state(normalized, norm.normalize('motion', reset_input))
+        for start in range(0, end, min(block_rows, 400)):
+            if cancelled():
+                raise InterruptedError('Recurrent trajectory inference interrupted')
+            stop = min(start + min(block_rows, 400), end)
+            if streaming:
+                rows = reader.read(series, start, stop)
+                motion = torch.as_tensor(rows['motion'].copy(), dtype=torch.float32, device=device)
+                values = torch.cat([cache.step(row[None], return_all=True)[0] for row in motion])
+            else:
+                motion = chunk_motion(reader, series, start, stop, model.config.receptive_field - 1,
+                                      reset)
+                motion = torch.as_tensor(motion, device=device)[None]
+                values, state = model(norm.normalize('motion', motion), normalized,
+                                      memory_state=state, return_state=True)
+                values = norm.denormalize('targets', values[0])
+            out[start:stop] = values.cpu().numpy()
+        return
     rf = model.config.receptive_field
     out[:] = np.nan
     props = torch.tensor(series['properties'], device=device, dtype=next(model.parameters()).dtype)[None]
