@@ -275,6 +275,10 @@ def _prepare_attempt(source_index, source, output, shard_rows, model, progress=F
                             interior_dimensions=meta['liquid']['geometry']['interior'])
                         active[env] = SeriesWriter(output, identity, details, shard_rows, model)
                     row = endpoint_row(state, by_end.get(tick), native)
+                    if active[env].total == 0 and any(e['reset'] and e['tick']==tick for e in episode['events']):
+                        # Small metadata only; ordinary windows/shards/stats are unchanged.
+                        active[env].metadata['recorded_reset'] = dict(
+                            tick=int(tick), motion=row['motion'].tolist(), native_dt=dt)
                     counts['grid_endpoints'] += 1
                     counts['invalid_grid_endpoints'] += int(not row['state_valid'])
                     active[env].append(row, stride)

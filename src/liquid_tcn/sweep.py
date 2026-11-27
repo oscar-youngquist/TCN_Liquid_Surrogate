@@ -306,7 +306,7 @@ class Coordinator:
                     if self.stop_time is None:
                         self.stop_time = time.monotonic()
                     for process, _, _, attempt in active.values():
-                        if time.monotonic()-self.stop_time > self.shutdown_timeout and process.poll() is None:
+                        if self.shutdown_timeout is not None and time.monotonic()-self.stop_time > self.shutdown_timeout and process.poll() is None:
                             process.kill()
                         if not attempt.get('stop_requested'):
                             process.send_signal(signal.SIGTERM)
@@ -359,10 +359,10 @@ class Coordinator:
             for process, _, _, _ in active.values():
                 if process.poll() is None:
                     process.send_signal(signal.SIGTERM)
-            finish_by = time.monotonic()+self.shutdown_timeout
+            finish_by = None if self.shutdown_timeout is None else time.monotonic()+self.shutdown_timeout
             for trial_id, (process, handle, started, attempt) in active.items():
                 try:
-                    code = process.wait(timeout=max(0,finish_by-time.monotonic()))
+                    code = process.wait(timeout=None if finish_by is None else max(0,finish_by-time.monotonic()))
                 except subprocess.TimeoutExpired:
                     process.kill()
                     code = process.wait()

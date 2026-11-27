@@ -166,7 +166,36 @@ class CachedInference:
         return F.conv1d(self.taps[index], conv.weight, conv.bias)
 
     @torch.inference_mode()
-    def step(self, motion, properties=None, reset=None, return_all=False):
+    def initialize_reset(self, motion, environments=None):
+        """Opt-in recorded-reset prefill; the next step consumes the first real input.
+
+        Supply motion rows in selected-environment order, after set_properties.
+        Other environments' rings, ages and shared cursor are left intact.
+        """
+        self._ensure_current()
+        if not self._ready:
+            raise ValueError('Set payload properties before reset backfill')
+        indices = torch.arange(self.environments, device=self.age.device)
+        selected = indices if environments is None else indices[environments].reshape(-1)
+        if motion.shape != (len(selected), 15) or not torch.isfinite(motion).all():
+            raise ValueError('Expected finite reset motion [selected environments,15]')
+        if not len(selected):
+            return
+        temporary = type(self)(self.model, self.norm, len(selected))
+        temporary.set_properties(self._properties.expand(self.environments, -1)[selected])
+        history = self.model.config.receptive_field - 1
+        for _ in range(history):
+            temporary.step(motion)
+        for destinations, sources, dim in ((self.caches, temporary.caches, 2),
+                                           (self.histories, temporary.histories, 1)):
+            for destination, source in zip(destinations, sources):
+                if destination is not None:
+                    shift = (self.cursor-temporary.cursor) % destination.shape[dim]
+                    destination[selected] = torch.roll(source, shift, dims=dim)
+        self.age[selected] = history
+
+    @torch.inference_mode()
+    def step(self, motion, properties=None, reset=None, return_all=False, reset_motion=None):
         """Return physical [B,12] (or all five [B,5,3] heads) and validity.
 
         Existing callers may pass properties each step. Reuse a versioned tensor
@@ -182,7 +211,9 @@ class CachedInference:
                 self.set_properties(properties)
         if not self._ready:
             raise ValueError('Call set_properties or supply properties to step')
-        if reset is not None:
+        if reset_motion is not None:
+            self.initialize_reset(reset_motion, reset)
+        elif reset is not None:
             self.reset(reset)
         if motion.shape != (self.environments, 15):
             raise ValueError('Expected one motion sample per environment: [environments,15]')

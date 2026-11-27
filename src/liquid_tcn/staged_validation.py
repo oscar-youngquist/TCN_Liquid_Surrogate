@@ -18,12 +18,14 @@ MONITOR_EVERY = 1000
 RECOVERY_EVERY = 200
 
 
-def monitoring_subset(data, path, seed=1729):
+def monitoring_subset(data, path, seed=1729, fraction=.05):
     path = Path(path)
     fingerprint = digest(Path(data)/'manifest.json')
     if path.exists():
         value = json.loads(path.read_text())
         return value
+    if not 0 < fraction <= 1:
+        raise ValueError('Monitor fraction must be in (0,1]')
     ds = WindowDataset(data, 'validation')
     if not len(ds):
         raise ValueError('Empty validation split')
@@ -34,7 +36,7 @@ def monitoring_subset(data, path, seed=1729):
             key = json.dumps([series.get(k) for k in ('group','robot','payload_id')])
             groups.setdefault(key, []).append(sid)
     counts = {key: int(np.isin(ds.index['series'], ids).sum()) for key,ids in groups.items()}
-    size = max(1, int(math.floor(len(ds)*.05+.5)))
+    size = max(1, int(math.floor(len(ds)*fraction+.5)))
     quotas = {key: int(size*n/len(ds)) for key,n in counts.items()}
     remainder = sorted(groups, key=lambda k: (-(size*counts[k]/len(ds)-quotas[k]),k))
     for key in remainder[:size-sum(quotas.values())]:
@@ -99,8 +101,14 @@ class StageValidation:
     First entry into stage 6 starts empty patience/shortlist state at the resumed
     update. Earlier-stage monitoring never counts toward final-stage patience.
     """
-    def __init__(self, stage, budget, subset_path, deadline=None, selection_root=None):
+    def __init__(self, stage, budget, subset_path, deadline=None, selection_root=None,
+                 patience_checks=3, monitor_every=None, recovery_every=None):
         self.stage, self.budget = stage,budget
+        self.patience_checks = patience_checks
+        self.monitor_every = MONITOR_EVERY if monitor_every is None else monitor_every
+        self.recovery_every = RECOVERY_EVERY if recovery_every is None else recovery_every
+        if min(self.patience_checks, self.monitor_every, self.recovery_every) < 1:
+            raise ValueError('Positive patience and monitoring/checkpoint intervals required')
         self.selection_root = Path(selection_root) if selection_root is not None else None
         self.subset_path = Path(subset_path)  # Legacy deadline argument is ignored.
         self.subset = json.loads(self.subset_path.read_text())
@@ -115,25 +123,30 @@ class StageValidation:
         self.state = copy.deepcopy(prior) if prior and prior['stage']==self.stage else dict(
             stage=self.stage,subset_sha256=self.subset_hash,entry_update=update,checks=[],shortlist=[],
             patience_best=None,stale=0,eligibility_update=config['pretrain_updates']+config['ramp_updates'])
+        self.state.update(effective_patience=self.patience_checks, monitor_every=self.monitor_every,
+                          recovery_every=self.recovery_every, monitor_windows=self.subset['windows'])
+        self.log.emit('monitor_policy', effective_patience=self.patience_checks,
+                      monitor_windows=self.subset['windows'], monitor_fraction=self.subset['fraction'],
+                      eligibility_update=self.state['eligibility_update'], min_delta=config['min_delta'])
         self.loader = make_loader(dataset,batch_size=config['validation_batch_size'] or config['batch_size'],
                                   num_workers=0,sampler=self.subset['indices'],pin_memory=config['pin_memory'])
 
     @property
     def patience_stop(self):
-        return self.stage=='6' and self.state is not None and self.state['stale']>=3
+        return self.stage=='6' and self.state is not None and self.state['stale']>=self.patience_checks
 
     def cancelled(self):
         return self.stopped.is_set()
 
     def pending_monitor(self, update):
-        return (update>self.state['entry_update'] and update % MONITOR_EVERY==0
+        return (update>self.state['entry_update'] and update % self.monitor_every==0
                 and (not self.state['checks'] or self.state['checks'][-1]['update']<update))
 
     def after_update(self, update):
         if self.cancelled():
             self.stopped.set()
             return
-        if update % MONITOR_EVERY == 0:
+        if update % self.monitor_every == 0:
             try:
                 from .train import weights
                 short,long = weights(self.config,update-1)
@@ -142,6 +155,13 @@ class StageValidation:
             except InterruptedError:
                 self.stopped.set()
                 return
+            if self.config.get('startup_fraction', 0):
+                from .reset_backfill import validation_diagnostics
+                diagnostics = validation_diagnostics(self.model, self.norm, self.dataset.path,
+                    self.config, self.config['device'], writer=self.writer, update=update)
+                path = self.output/f'reset-validation-{update}.json'
+                atomic_json(path, diagnostics)
+                report['reset_backfill_report'] = str(path)
             score = report['selection_metric']
             if not math.isfinite(score):
                 raise FloatingPointError('Nonfinite monitoring score')
@@ -174,7 +194,7 @@ class StageValidation:
             for path in self.output.glob('shortlist-*.pt'):
                 if path.name not in retained:
                     path.unlink()
-        elif update % RECOVERY_EVERY == 0:
+        elif update % self.recovery_every == 0:
             self.save('latest.pt')
 
     def finish(self, update):
@@ -207,6 +227,10 @@ class StageValidation:
                 short,long = weights(self.config,row['update']-1)
                 report = evaluate(self.model,CancellableLoader(self.full_loader,self),self.norm,self.config['device'],
                     supervised='mse',lambda_short=short,lambda_long=long,physics_dtype=self.config['physics_dtype'])
+                if self.config.get('startup_fraction', 0):
+                    from .reset_backfill import validation_diagnostics
+                    report['reset_backfill'] = validation_diagnostics(self.model, self.norm,
+                        self.dataset.path, self.config, self.config['device'])
                 if report['coverage']['fraction']!=1 or not math.isfinite(report['selection_metric']):
                     raise ValueError('Full finite validation required for selection')
                 record = dict(scope=scope,checkpoint_sha256=row['sha256'],subset_sha256=self.subset_hash,report=report,update=row['update'])
@@ -227,7 +251,10 @@ class StageValidation:
             best_sha256=digest(folder/'best.pt'),latest_sha256=digest(latest),subset_sha256=self.subset_hash,
             subset_coverage=self.subset['fraction'],monitoring=copy.deepcopy(self.state),evaluations=[{k:v for k,v in r.items() if k!='report'} for r in evaluated],
             per_payload_report=str(report_path),**{k:selected['report'][k] for k in ('heads','peak_wrench','conservation','coverage')})
+        result.update(effective_patience=self.patience_checks, monitor_windows=self.subset['windows'])
         atomic_json(folder/'selection.json',result)
+        self.log.emit('selection_complete', stopping_reason=reason, selected_update=selected['update'],
+                      effective_patience=self.patience_checks, monitor_windows=self.subset['windows'])
 
     def close(self):
         if self.loader is not None:

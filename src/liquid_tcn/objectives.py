@@ -28,7 +28,7 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
     # errors across heads and divide by 3*sum(counts): each valid coordinate
     # has equal weight even when heads have different label coverage.
     counts = valid.sum((0, 1))
-    if (counts == 0).any():
+    if counts.sum() == 0 or ((counts == 0).any() and 'input_context_valid' not in batch):
         raise ValueError('Empty supervision for one or more heads')
     sums = torch.where(valid[..., None], error, torch.zeros_like(error)).sum((0, 1, 3))
     # Each valid scalar has equal weight; missing labels never dilute a head.
@@ -50,14 +50,14 @@ def objective(prediction, batch, normalization, lambda_short=0., lambda_long=0.,
         args.update(r_B=physical[:, :, 2], v_B=physical[:, :, 3], S_B=physical[:, :, 4],
             F_average_B=physical[:, 1:, 0], tau_average_O_B=physical[:, 1:, 1],
             h=batch['h'][:, 1:].to(dtype), episode_id=batch['episode_id'],
-            state_valid=batch['state_valid'], history_valid=batch['history_valid'],
+            state_valid=batch['state_valid'], history_valid=batch.get('input_context_valid', batch['history_valid']),
             interval_valid=batch['interval_valid'][:, 1:],
             window_intervals=prediction.shape[1]-1, window_seconds=.005*(prediction.shape[1]-1))
         physics = discrete_constraints(**args)
         # Even during supervised pretraining (zero physics weights), report and
         # validate constraint coverage; an empty masked zero is not a good fit.
         for horizon in ('short', 'long'):
-            if not physics[horizon]['has_valid']:
+            if not physics[horizon]['has_valid'] and 'input_context_valid' not in batch:
                 raise ValueError(f'Empty valid {horizon} constraints; refusing a zero-loss success')
             if not torch.isfinite(physics[horizon]['loss']):
                 raise FloatingPointError(f'Nonfinite {horizon} physics')
@@ -84,7 +84,7 @@ def loss_components(result, lambda_short, lambda_long):
     sums, counts = packed[:5], packed[5:10]
     components = {}
     for head, total, count in zip(HEADS, sums, counts):
-        components[f'supervised/{head}'] = total / (3 * count)
+        components[f'supervised/{head}'] = total / (3 * max(count, 1))
         components[f'supervised_contribution/{head}'] = total / (3 * sum(counts))
     for horizon, weight in (('short', lambda_short), ('long', lambda_long)):
         values = packed[10:13] if horizon == 'short' else packed[13:16]

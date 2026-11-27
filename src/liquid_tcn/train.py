@@ -18,7 +18,7 @@ from .batch_logging import BatchLogger, resolve_mode, MetricWriter, write_scalar
 from .progress import TrainingProgress
 from .model import build_model, ModelConfig
 from .normalization import Normalization
-from .dataset import WindowDataset, EpochSampler, make_loader, to_device, close_loader
+from .dataset import WindowDataset, EpochSampler, prepared_model_config, make_loader, to_device, close_loader
 from .objectives import objective, loss_components
 from .gradients import backward_objectives
 from .evaluate import evaluate
@@ -26,7 +26,7 @@ from .checkpoint import atomic_save, load_checkpoint, rng_state, restore_rng
 from .ported.storage import atomic_json, digest
 
 DEFAULTS = dict(seed=1, batch_size=16, num_workers=0, prefetch_factor=2, pin_memory=True,
-    cache_size=8, updates=20000, epochs=None, pretrain_updates=5000, ramp_updates=5000,
+    cache_size=8, startup_fraction=0., startup_index=None, startup_validation_ages=16, updates=20000, epochs=None, pretrain_updates=5000, ramp_updates=5000,
     pretrain_lr=1e-3, physics_lr=1e-4, weight_decay=1e-4, gradient_clip=1.,
     lambda_short=1., lambda_long=1., supervised='mse', huber_delta=1.,
     physics_dtype='float64', scheduler='cosine', min_lr_ratio=.1,
@@ -200,7 +200,15 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ('latest.pt', 'config.json')) and resume is None:
         raise ValueError('Run exists; supply --resume or use a fresh output')
-    training = WindowDataset(data, 'train', config['cache_size'], verify=False)
+    if not 0 <= config['startup_fraction'] < 1:
+        raise ValueError('startup_fraction must be in [0,1)')
+    if config['startup_fraction']:
+        from .reset_backfill import BackfilledWindows, MixedWindowSampler
+        training = BackfilledWindows(data, 'train', config['cache_size'], config['startup_index'])
+        sampler = MixedWindowSampler(training, config['startup_fraction'], config['batch_size'], config['seed'])
+    else:
+        training = WindowDataset(data, 'train', config['cache_size'], verify=False)
+        sampler = EpochSampler(len(training), config['seed'])
     validation = WindowDataset(data, 'validation', config['cache_size'])
     if not len(training) or not len(validation):
         raise ValueError('Training and validation must both have eligible windows in separate collection groups')
@@ -208,12 +216,13 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         raise ValueError('epochs must be null or a positive integer')
     # Epoch mode includes the last partial batch. Resolve it once so the
     # learning-rate schedule and checkpoints share the same update horizon.
-    total_updates = (config['epochs'] * math.ceil(len(training) / config['batch_size'])
+    total_updates = (config['epochs'] * math.ceil(sampler.length / config['batch_size'])
                      if config['epochs'] is not None else config['updates'])
     if saved and not {'epochs','updates'}.intersection(configuration or {}):
         total_updates = saved['effective_updates']
     norm = Normalization(saved['normalization'] if saved else training.manifest['normalization'])
-    model = build_model(ModelConfig(**(expected_model or (saved['model_config'] if saved else training.manifest['model'])))).to(device)
+    model_config = expected_model or (saved['model_config'] if saved else asdict(prepared_model_config(training.manifest)))
+    model = build_model(ModelConfig(**model_config)).to(device)
     training.check_model(model.config)
     validation.check_model(model.config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['pretrain_lr'], weight_decay=config['weight_decay'])
@@ -229,7 +238,6 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
         decay = 1. if config['scheduler'] == 'constant' else config['min_lr_ratio'] + (1-config['min_lr_ratio'])*.5*(1+math.cos(math.pi*fraction))
         return config['physics_lr']/config['pretrain_lr'] * decay
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, learning_rate)
-    sampler = EpochSampler(len(training), config['seed'])
     provenance = digest(Path(data)/'manifest.json')
     update, best, stale = 0, float('inf'), 0
     if resume:
@@ -369,6 +377,8 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     supervised_counts=result['supervised_counts'].tolist(), lambda_short=short, lambda_long=long,
                     gradient_norm=scalars[6], learning_rate=used_lr, secondary=scalars[7], projection=projection,
                     loss_components=loss_components(result, short, long))
+                if config['startup_fraction']:
+                    record['startup_sampling'] = sampler.observe(batch)
                 clipped = int(record['gradient_norm'] > config['gradient_clip'])
                 timing['clipped'] += clipped
                 log.state.update({key: record[key] for key in log.state if key in record})
@@ -379,6 +389,10 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                     last_validation = evaluate(model, val_loader, norm, device, config['validation_batches'],
                         supervised=config['supervised'], huber_delta=config['huber_delta'],
                         lambda_short=short, lambda_long=long, physics_dtype=config['physics_dtype'])
+                    if config['startup_fraction']:
+                        from .reset_backfill import validation_diagnostics
+                        last_validation['reset_backfill'] = validation_diagnostics(
+                            model, norm, data, config, device, writer=writer, update=update)
                     timing['validation_seconds'] += time.perf_counter()-vstart
                     # Select checkpoints using fixed normalized supervised MSE, independent
                     # of the changing physics weights (and the training MSE/Huber choice).
@@ -415,6 +429,12 @@ def _train(data, output, configuration, resume, max_updates, expected_model,
                 for key in ('loss', 'supervised', 'short', 'long', 'lambda_short', 'lambda_long',
                             'gradient_norm', 'learning_rate', 'short_count', 'long_count'):
                     scalar_tags['train/' + key] = record[key]
+                if config['startup_fraction']:
+                    sampling = record['startup_sampling']
+                    for key in ('batch_fraction', 'consumed_fraction'):
+                        scalar_tags['train/startup/' + key] = sampling[key]
+                    for i, count in enumerate(sampling['age_histogram']):
+                        scalar_tags[f'train/startup/age_bin_{i}_count'] = count
                 scalar_tags['train/secondary'] = record['secondary']
                 for key, value in record['loss_components'].items():
                     scalar_tags['train/' + key] = value

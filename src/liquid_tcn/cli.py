@@ -72,7 +72,10 @@ def main():
             if resolved['epochs'] is not None:
                 from .dataset import WindowDataset
                 import math
-                budget = resolved['epochs'] * math.ceil(len(WindowDataset(data))/resolved['batch_size'])
+                population = len(WindowDataset(data))
+                if resolved['startup_fraction']:
+                    population = math.ceil(population/(1-resolved['startup_fraction']))
+                budget = resolved['epochs'] * math.ceil(population/resolved['batch_size'])
             else:
                 budget = resolved['updates']
             policy = standalone_policy(data, output, monitoring, budget)

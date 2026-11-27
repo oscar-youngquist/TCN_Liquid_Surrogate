@@ -14,6 +14,19 @@ from .ported.storage import digest
 from .model import ModelConfig
 
 
+def prepared_model_config(manifest):
+    """Read legacy windows also prepared by the optional-memory code branch.
+
+    These fields are inert when temporal_memory is explicitly 'none'; reject
+    recurrent manifests instead of substituting an architecture or weights.
+    """
+    values = dict(manifest['model'])
+    if values.get('temporal_memory') == 'none':
+        for key in ('temporal_memory', 'mamba_d_conv', 'mamba_d_state', 'mamba_expand'):
+            values.pop(key, None)
+    return ModelConfig(**values)
+
+
 class WindowDataset(Dataset):
     def __init__(self, path, split='train', cache_size=8, verify=False, verification_receipt=None):
         self.path = Path(path)
@@ -27,7 +40,7 @@ class WindowDataset(Dataset):
         self.pid = None
         self.metadata_cache = OrderedDict()
         self.series = {s['id']: s for s in self.manifest['series']}
-        c = ModelConfig(**self.manifest['model'])
+        c = prepared_model_config(self.manifest)
         self.rf = c.receptive_field
         self.input_length = c.input_length
         if (self.path / f'{split}.idx').stat().st_size != self.length * INDEX_DTYPE.itemsize:
@@ -38,7 +51,7 @@ class WindowDataset(Dataset):
         # Window indices certify real history at preparation time. Different
         # features are safe on the same windows, but longer histories cannot be
         # obtained by left-padding or crossing an episode/gap boundary.
-        prepared = ModelConfig(**self.manifest['model'])
+        prepared = prepared_model_config(self.manifest)
         if (config.receptive_field != self.rf or config.input_length != self.input_length
                 or config.sample_seconds != prepared.sample_seconds):
             raise ValueError(f'Model needs {config.receptive_field} history samples and '
@@ -99,7 +112,11 @@ class WindowDataset(Dataset):
         if not indices or any(i < 0 or i >= self.length for i in indices):
             raise IndexError(indices)
         entries = self.index[indices]
-        count, endpoints = len(indices), self.input_length - self.rf + 1
+        return self._gather_entries(entries)
+
+    def _gather_entries(self, entries, resets=None):
+        """Gather existing rows; optional reset inputs may fill negative context only."""
+        count, endpoints = len(entries), self.input_length - self.rf + 1
         sid = int(entries[0]['series'])
         dtype = self._shard(sid, int(entries[0]['end']) // self.manifest['shard_rows']).dtype
         arrays = {}
@@ -117,7 +134,11 @@ class WindowDataset(Dataset):
         for i, entry in enumerate(entries):
             sid, end = int(entry['series']), int(entry['end'])
             begin = end - self.input_length + 1
-            pos = begin
+            if begin < 0:
+                if resets is None or end < endpoints-1:
+                    raise ValueError('Synthetic context needs a true reset and real supervised endpoints')
+                arrays['motion'][i, : -begin] = resets[sid]
+            pos = max(0, begin)
             while pos <= end:
                 shard, offset = divmod(pos, self.manifest['shard_rows'])
                 take = min(end-pos+1, self.manifest['shard_rows']-offset)

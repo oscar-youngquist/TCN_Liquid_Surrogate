@@ -1,0 +1,11 @@
+{
+  "baseline_run": "runs/pyramid_film_reset_backfill/run_1",
+  "data": "/home/robo/Research/TCN_Liquid_Surrogate/data/prepared_mamba",
+  "startup_index": "data/reset_backfill_index",
+  "monitor_seed": 1729,
+  "evaluation_batch_size": 64,
+  "evaluation_chunk_size": 400,
+  "bootstrap_repetitions": 2000,
+  "bootstrap_seed": 1729,
+  "historical_checkpoints": []
+}
